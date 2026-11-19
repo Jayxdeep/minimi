@@ -1,6 +1,3 @@
--- ---------------------------------------------------------------------------
--- Phase 0 schema.
---
 -- Conventions that the whole app depends on:
 --   * Every timestamp is a UTC ISO-8601 string ending in "Z"
 --     (new Date().toISOString()), so lexicographic comparison == chronological.
