@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+
+# SQLite database + WAL sidecars
+data/*.db*
+!data/.gitkeep
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+
+.DS_Store
+*.log
