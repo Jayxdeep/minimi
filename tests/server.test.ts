@@ -5,8 +5,10 @@ import type { AddressInfo } from 'node:net';
 import type { Express } from 'express';
 import { createApp } from '../src/server';
 import { createDb, type Db } from '../src/db';
+import { createPlanner } from '../src/planner';
 import { chunkReply } from '../src/routes/chat';
 import type { SseEvent } from '../src/types';
+import { FIXED_NOW, FakeLLMClient, plannerJson } from './helpers/fake-llm';
 
 let db: Db;
 let app: Express;
@@ -21,8 +23,8 @@ afterEach(() => {
   db.close();
 });
 
-function collectSse(body: unknown) {
-  return request(app)
+function collectSseFrom(target: Express, body: unknown) {
+  return request(target)
     .post('/chat')
     .send(body as object)
     .buffer(true)
@@ -31,6 +33,10 @@ function collectSse(body: unknown) {
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => callback(null, Buffer.concat(chunks).toString('utf8')));
     });
+}
+
+function collectSse(body: unknown) {
+  return collectSseFrom(app, body);
 }
 
 function parseEvents(raw: string): SseEvent[] {
@@ -220,5 +226,132 @@ describe('chunkReply', () => {
 
   it('returns nothing for an empty string', () => {
     expect(chunkReply('')).toEqual([]);
+  });
+});
+
+describe('POST /chat with a planner', () => {
+  function plannedApp(responses: Array<string | Error>) {
+    const llm = new FakeLLMClient(responses);
+    const planned = createApp(db, {
+      chunkDelayMs: 0,
+      planner: createPlanner(llm),
+      now: () => FIXED_NOW,
+    });
+    return { app: planned, llm };
+  }
+
+  function planFrom(events: SseEvent[]) {
+    const event = events.find((candidate) => candidate.type === 'plan');
+    if (event?.type !== 'plan') throw new Error('expected a plan event');
+    return event.plan;
+  }
+
+  it('emits a plan frame and persists no assistant answer yet', async () => {
+    const { app: planned } = plannedApp([plannerJson()]);
+
+    const response = await collectSseFrom(planned, {
+      sessionId: 's-plan',
+      message: 'has postgres hosting pricing changed?',
+    });
+
+    const events = parseEvents(String(response.body));
+    const plan = planFrom(events);
+
+    expect(plan.intent).toBe('change');
+    expect(plan.now_iso).toBe(FIXED_NOW.toISOString());
+    expect(plan.search_plan[0]?.query).toBe('Supabase pricing');
+
+    expect(events.some((event) => event.type === 'token')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'done' });
+
+    // Phase 1 deliberately remembers only the question.
+    expect(db.listMessagesBySession('s-plan').map((row) => row.role)).toEqual([
+      'user',
+    ]);
+  });
+
+  it('degrades to a chat plan when the planner fails twice', async () => {
+    const { app: planned, llm } = plannedApp(['not json', '{"intent":"nope"}']);
+
+    const response = await collectSseFrom(planned, {
+      sessionId: 's-degraded',
+      message: 'hello',
+    });
+
+    const events = parseEvents(String(response.body));
+    const plan = planFrom(events);
+
+    expect(plan.intent).toBe('chat');
+    expect(plan.search_plan).toEqual([]);
+    expect(
+      events.some(
+        (event) => event.type === 'status' && /degraded/.test(event.text),
+      ),
+    ).toBe(true);
+    expect(events.at(-1)).toEqual({ type: 'done' });
+    expect(llm.callCount).toBe(2);
+  });
+
+  it('shows stored snapshots to the planner and filters invented ids', async () => {
+    db.upsertSession('prior-session');
+    const prior = db.insertMessage({
+      sessionId: 'prior-session',
+      role: 'assistant',
+      content: 'Supabase Pro is $25/mo.',
+      createdAt: '2026-11-17T09:00:00.000Z',
+    });
+    const snapshot = db.insertSnapshot({
+      messageId: prior.id,
+      label: 'Postgres hosting',
+      entities: ['Supabase'],
+      claims: [
+        {
+          subject: 'Supabase',
+          attribute: 'pricing',
+          value: '$25/mo',
+          as_of: '2026-11-10',
+          source_ids: [0],
+          confidence: 0.8,
+        },
+      ],
+      sources: [
+        {
+          url: 'https://supabase.com/pricing',
+          title: 'Pricing',
+          retrieved_at: '2026-11-17T09:00:00.000Z',
+        },
+      ],
+      observedAt: '2026-11-17T09:00:00.000Z',
+    });
+
+    const { app: planned, llm } = plannedApp([
+      plannerJson({ verify_snapshot_ids: [snapshot.id, 'snap_invented'] }),
+    ]);
+
+    const response = await collectSseFrom(planned, {
+      sessionId: 's-verify',
+      message: 'is that still correct?',
+    });
+
+    const plan = planFrom(parseEvents(String(response.body)));
+    expect(plan.verify_snapshot_ids).toEqual([snapshot.id]);
+
+    const prompt = llm.calls[0]?.messages[1]?.content ?? '';
+    expect(prompt).toContain(snapshot.id);
+    expect(prompt).toContain('Supabase/pricing');
+  });
+
+  it('passes the browser timezone through to the planner', async () => {
+    const { app: planned, llm } = plannedApp([plannerJson()]);
+
+    await collectSseFrom(planned, {
+      sessionId: 's-tz',
+      message: 'what did I ask last Tuesday?',
+      userTz: 'Asia/Kolkata',
+    });
+
+    const prompt = llm.calls[0]?.messages[1]?.content ?? '';
+    expect(prompt).toContain('Asia/Kolkata');
+    expect(prompt).toContain('NOW_LOCAL:');
   });
 });

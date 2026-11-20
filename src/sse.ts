@@ -4,6 +4,8 @@ import type { SseEvent } from './types';
 export interface SseStream {
   /** True once the client has gone away (or we ended the stream). */
   readonly closed: boolean;
+  /** Aborted when the client disconnects, so in-flight model calls can stop. */
+  readonly signal: AbortSignal;
   send(event: SseEvent): void;
   end(): void;
 }
@@ -26,14 +28,20 @@ export function openSse(res: Response): SseStream {
 
   let closed = false;
   let ended = false;
+  const abort = new AbortController();
 
   res.on('close', () => {
     closed = true;
+    abort.abort();
   });
 
   return {
     get closed() {
       return closed || ended;
+    },
+
+    get signal() {
+      return abort.signal;
     },
 
     send(event) {

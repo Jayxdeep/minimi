@@ -56,6 +56,11 @@ once with the validation error fed back. That is a retry, not a call: worst case
 planner attempts, still one synthesizer. The synthesizer is never retried mid-stream,
 because half an answer cannot be un-said.
 
+**Status.** Call 1 (the planner) and the memory index are implemented. A planner-mode turn
+therefore persists only the user episode: there is no synthesized answer yet, and storing
+a fake one would poison later recall. That single line changes in Phase 3, not the
+pipeline around it.
+
 ## 3. Episodes and observations are different things
 
 Two tables carry all memory, and they answer different questions.
@@ -164,6 +169,23 @@ inside the model:
 - Code validates the output with Zod, clamps ranges to a sane window
   (`now − 5 years … now + 1 day`), and executes the plan verbatim. **The AI proposes; code
   disposes.**
+
+What "disposes" means concretely, all deterministic and all tested:
+
+| Model output                        | Code behaviour                                              |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `now_iso`                           | overwritten with the server clock; never trusted            |
+| implausible / inverted date range   | dropped; an invalid `memory.window` becomes `null`          |
+| `verify_snapshot_ids`               | filtered to ids the planner was actually shown              |
+| > 4 search queries, duplicates      | truncated to 4, case-insensitively deduped, whitespace collapsed |
+| empty query                         | dropped                                                     |
+| `since` not `YYYY-MM-DD`            | removed, query kept                                         |
+| > 8 keywords                        | truncated and lowercased                                    |
+
+The planner runs at `temperature: 0` with `max_tokens: 1200` in JSON mode. Transport
+failures are not retried by the planner (the SDK owns one transport retry); only schema
+failures get the single correction attempt, because that is the failure mode this provider
+actually exhibits.
 
 ### Walkthrough: query 2
 
@@ -295,9 +317,12 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 0): 30 tests covering migrations, schema shape, time-range boundaries,
-FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing, exact echo
-reconstruction, session reuse, and disconnect safety.
+Current suite (Phase 1): 56 tests covering migrations, schema shape, time-range
+boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing, exact
+echo reconstruction, session reuse, disconnect safety, memory-index construction,
+planner parsing (fences, prose, bad JSON), sanitisation, the single retry, prompt
+injection, and planner-mode streaming. The LLM is a fake; `npm test` never touches the
+network.
 
 ## 12. Security and limits
 
@@ -331,7 +356,7 @@ reconstruction, session reuse, and disconnect safety.
 | 0.3   | Express app, `POST /chat` SSE envelope, `/health`, vanilla chat UI       | Handler sends only `done`               |
 | 0.4   | Echo streaming, session upsert, episode persistence, disconnect safety  | Model calls absent                      |
 | 0.5   | README, this document, phase log                                        | —                                       |
-| 1     | Planner + `LLMClient`/`DeepSeekClient` + Zod retry                      | Search                                  |
+| 1     | Planner + `LLMClient`/`DeepSeekClient`, memory index before planning, Zod validation + one retry, deterministic sanitisation, plan SSE frame | Search; synthesis |
 | 2     | `SearchProvider` (Tavily) + deterministic fan-out + recall merge         | Synthesis                               |
 | 3     | Synthesizer streaming, fence parser, citation checks, snapshots         | Cross-turn change wiring                |
 | 4     | Recall + verification wiring; all three canonical queries end-to-end     | Eval harness                            |

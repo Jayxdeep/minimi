@@ -1,11 +1,19 @@
 import { Router } from 'express';
 import type { Db } from '../db';
-import { openSse } from '../sse';
-import { ChatRequestSchema } from '../types';
+import { buildMemoryIndex } from '../memory';
+import { degradedPlan, PlannerError, type Planner } from '../planner';
+import { openSse, type SseStream } from '../sse';
+import { safeTimezone } from '../time';
+import { ChatRequestSchema, type PlannerOutput } from '../types';
 
-export interface ChatRouterOptions {
-  /** Delay between streamed chunks. 0 in tests. */
+export interface ChatRouterDeps {
+  db: Db;
+  /** Delay between streamed chunks in echo mode. 0 in tests. */
   chunkDelayMs: number;
+  /** Null/absent means "no model configured": echo mode. */
+  planner?: Planner | null;
+  /** Injectable clock, for deterministic tests. */
+  now?: () => Date;
 }
 
 /**
@@ -37,8 +45,104 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function createChatRouter(db: Db, options: ChatRouterOptions): Router {
+/**
+ * Phase 0 echo path, kept as the no-keys fallback. It also proves the final
+ * loop shape: stream tokens, then write state, then close.
+ */
+async function echoTurn(
+  db: Db,
+  stream: SseStream,
+  input: { sessionId: string; message: string },
+  chunkDelayMs: number,
+  at: Date,
+): Promise<void> {
+  stream.send({ type: 'status', text: 'thinking…' });
+
+  const reply = `echo: ${input.message}`;
+
+  for (const chunk of chunkReply(reply)) {
+    if (stream.closed) return;
+    stream.send({ type: 'token', text: chunk });
+    if (chunkDelayMs > 0) await sleep(chunkDelayMs);
+  }
+
+  if (stream.closed) return;
+
+  db.insertMessage({
+    sessionId: input.sessionId,
+    role: 'assistant',
+    content: reply,
+    createdAt: at.toISOString(),
+  });
+
+  stream.send({ type: 'done' });
+  stream.end();
+}
+
+/**
+ * Phase 1 planner-only path.
+ *
+ * No assistant message is persisted yet: there is no synthesized answer to
+ * remember, and inventing one would poison later recall. Phase 3 replaces the
+ * tail of this function with the synthesizer.
+ */
+async function planTurn(
+  stream: SseStream,
+  planner: Planner,
+  input: {
+    message: string;
+    userTz: string;
+    memoryIndex: ReturnType<typeof buildMemoryIndex>;
+  },
+  now: Date,
+): Promise<void> {
+  stream.send({ type: 'status', text: 'planning…' });
+
+  let plan: PlannerOutput;
+  let degraded = false;
+
+  try {
+    const result = await planner.plan(input.message, {
+      now,
+      userTz: input.userTz,
+      memoryIndex: input.memoryIndex,
+      signal: stream.signal,
+    });
+    plan = result.plan;
+  } catch (error) {
+    if (stream.closed) return;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      '[chat] planner degraded:',
+      detail,
+      error instanceof PlannerError ? error.issues : '',
+    );
+    plan = degradedPlan(now);
+    degraded = true;
+  }
+
+  if (stream.closed) return;
+
+  if (degraded) {
+    stream.send({
+      type: 'status',
+      text: 'planner unavailable — degraded to chat; no search this turn',
+    });
+  }
+
+  stream.send({ type: 'plan', plan });
+  stream.send({
+    type: 'status',
+    text: 'plan only — search and synthesis arrive in phases 2–3',
+  });
+  stream.send({ type: 'done' });
+  stream.end();
+}
+
+export function createChatRouter(deps: ChatRouterDeps): Router {
   const router = Router();
+  const planner = deps.planner ?? null;
+  const now = deps.now ?? (() => new Date());
 
   router.post('/chat', async (req, res) => {
     const parsed = ChatRequestSchema.safeParse(req.body);
@@ -55,32 +159,49 @@ export function createChatRouter(db: Db, options: ChatRouterOptions): Router {
       return;
     }
 
-    const { sessionId, message, userTz } = parsed.data;
+    const { sessionId, message } = parsed.data;
+    const userTz = safeTimezone(parsed.data.userTz);
     const stream = openSse(res);
+    const at = now();
+
+    // Memory means "before this turn". Build the index before inserting the
+    // user message so the planner is not shown its own question twice.
+    const memoryIndex = planner ? buildMemoryIndex(deps.db, at) : [];
 
     try {
-      db.upsertSession(sessionId, userTz);
-      db.insertMessage({ sessionId, role: 'user', content: message });
+      deps.db.upsertSession(sessionId, userTz, at.toISOString());
+      deps.db.insertMessage({
+        sessionId,
+        role: 'user',
+        content: message,
+        createdAt: at.toISOString(),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('[chat] failed to record user turn:', detail);
+      stream.send({ type: 'error', message: 'Could not record this turn.' });
+      stream.end();
+      return;
+    }
 
-      stream.send({ type: 'status', text: 'thinking…' });
-
-      // Phase 0.4: echo. The shape of this loop is the final one: tokens out,
-      // then one state write, then done.
-      const reply = `echo: ${message}`;
-
-      for (const chunk of chunkReply(reply)) {
-        if (stream.closed) return;
-        stream.send({ type: 'token', text: chunk });
-        if (options.chunkDelayMs > 0) await sleep(options.chunkDelayMs);
+    try {
+      if (!planner) {
+        await echoTurn(
+          deps.db,
+          stream,
+          { sessionId, message },
+          deps.chunkDelayMs,
+          at,
+        );
+        return;
       }
 
-      // A client that left mid-answer gets no assistant row: we never persist
-      // a partial answer, because a snapshot must describe a complete one.
-      if (stream.closed) return;
-
-      db.insertMessage({ sessionId, role: 'assistant', content: reply });
-      stream.send({ type: 'done' });
-      stream.end();
+      await planTurn(
+        stream,
+        planner,
+        { message, userTz, memoryIndex },
+        at,
+      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error('[chat] turn failed:', detail);

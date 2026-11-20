@@ -209,6 +209,101 @@
 
       @keyframes blink { to { visibility: hidden; } }
 
+      .plan {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0b0d13;
+        overflow: hidden;
+      }
+
+      .plan > summary {
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .plan > summary::-webkit-details-marker { display: none; }
+      .plan > summary:hover { color: var(--text); }
+      .plan > summary em {
+        font-style: normal;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .plan > summary .caret { transition: transform 120ms ease; }
+      .plan[open] > summary .caret { transform: rotate(90deg); }
+      .plan[open] > summary { border-bottom: 1px solid var(--line); }
+
+      .plan .raw > summary {
+        padding: 6px 12px;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #5f677c;
+        cursor: pointer;
+        list-style: none;
+      }
+      .plan .raw > summary::-webkit-details-marker { display: none; }
+      .plan .raw[open] > summary { border-top: 1px solid var(--line); }
+
+      .plan-body {
+        padding: 10px 12px;
+        display: grid;
+        gap: 9px;
+      }
+
+      .plan-label {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #5f677c;
+        margin-bottom: 4px;
+      }
+
+      .plan-line { display: flex; flex-wrap: wrap; gap: 6px; }
+
+      .chip {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: #aab3c8;
+        border-radius: 6px;
+        padding: 2px 7px;
+      }
+
+      .plan ol {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 12.5px;
+        color: #c3cada;
+      }
+
+      .plan ol li { margin: 2px 0; }
+      .plan ol cite { font-family: var(--mono); font-size: 9.5px; color: var(--muted); font-style: normal; margin-left: 6px; }
+
+      .plan pre {
+        margin: 0;
+        padding: 10px 12px;
+        background: #08090d;
+        border-top: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        line-height: 1.5;
+        color: #8f98ad;
+        overflow-x: auto;
+        max-height: 240px;
+      }
+
       footer {
         width: 100%;
         max-width: 840px;
@@ -290,6 +385,7 @@
       <div class="empty" id="empty">
         <h1>Temporal recall, first.</h1>
         <p>Ask something, then come back and ask what changed.</p>
+        <p>The planner resolves time, picks recall keywords, and drafts searches.</p>
         <p><code>“What did I ask you on 3 November? Is your answer still correct today?”</code></p>
       </div>
       <div id="messages"></div>
@@ -307,7 +403,7 @@
         ></textarea>
         <button id="send" type="submit">Send</button>
       </form>
-      <div class="hint">Enter to send · Shift + Enter for a newline · Phase 0: echo mode</div>
+      <div class="hint">Enter to send · Shift + Enter for a newline · Phase 1: planner only</div>
     </footer>
 
     <script>
@@ -379,6 +475,115 @@
           sendEl.disabled = value;
           inputEl.disabled = value;
           sendEl.textContent = value ? '…' : 'Send';
+        }
+
+        function shortStamp(iso) {
+          const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(iso || ''));
+          return match ? match[1] + ' ' + match[2] : String(iso || '?');
+        }
+
+        function renderPlan(target, plan) {
+          const details = document.createElement('details');
+          details.className = 'plan';
+          details.open = true;
+
+          const summary = document.createElement('summary');
+          const caret = document.createElement('span');
+          caret.className = 'caret';
+          caret.textContent = '▸';
+          const title = document.createElement('span');
+          title.textContent = 'plan';
+          const intent = document.createElement('em');
+          intent.textContent = plan.intent || 'unknown';
+          summary.append(caret, title, intent);
+
+          const body = document.createElement('div');
+          body.className = 'plan-body';
+
+          const chip = (text) => {
+            const el = document.createElement('span');
+            el.className = 'chip';
+            el.textContent = text;
+            return el;
+          };
+
+          const section = (label, chips) => {
+            const wrap = document.createElement('div');
+            const head = document.createElement('div');
+            head.className = 'plan-label';
+            head.textContent = label;
+            const line = document.createElement('div');
+            line.className = 'plan-line';
+            line.append(...(chips.length > 0 ? chips : [chip('—')]));
+            wrap.append(head, line);
+            return wrap;
+          };
+
+          const refs = (plan.temporal_refs || []).map((ref) =>
+            chip(ref.expression + ' → ' + shortStamp(ref.resolved_range[0])),
+          );
+          body.append(section('time', refs));
+
+          const memoryWindow = plan.memory && plan.memory.window;
+          body.append(
+            section(
+              'memory window',
+              memoryWindow
+                ? [
+                    chip(
+                      shortStamp(memoryWindow[0]) +
+                        ' → ' +
+                        shortStamp(memoryWindow[1]),
+                    ),
+                  ]
+                : [],
+            ),
+          );
+
+          const keywords = ((plan.memory && plan.memory.keywords) || []).map(chip);
+          body.append(section('recall keywords', keywords));
+
+          const verify = (plan.verify_snapshot_ids || []).map((id) =>
+            chip('snapshot ' + String(id).slice(0, 8)),
+          );
+          body.append(section('re-verify', verify));
+
+          const searchWrap = document.createElement('div');
+          const searchHead = document.createElement('div');
+          searchHead.className = 'plan-label';
+          searchHead.textContent = 'search plan';
+          const list = document.createElement('ol');
+          const queries = plan.search_plan || [];
+
+          if (queries.length === 0) {
+            const item = document.createElement('li');
+            item.textContent = 'no searches';
+            list.append(item);
+          } else {
+            for (const query of queries) {
+              const item = document.createElement('li');
+              item.append(document.createTextNode(query.query));
+              const cite = document.createElement('cite');
+              cite.textContent =
+                query.mode + (query.since ? ' · since ' + query.since : '');
+              item.append(cite);
+              list.append(item);
+            }
+          }
+
+          searchWrap.append(searchHead, list);
+          body.append(searchWrap);
+
+          const rawWrap = document.createElement('details');
+          rawWrap.className = 'raw';
+          const rawSummary = document.createElement('summary');
+          rawSummary.textContent = 'raw json';
+          const raw = document.createElement('pre');
+          raw.textContent = JSON.stringify(plan, null, 2);
+          rawWrap.append(rawSummary, raw);
+
+          details.append(summary, body, rawWrap);
+          target.bubble.append(details);
         }
 
         function autoGrow() {
@@ -453,6 +658,11 @@
             await readSse(response, (event) => {
               if (event.type === 'status') {
                 status.textContent = event.text;
+              } else if (event.type === 'plan') {
+                renderPlan(target, event.plan);
+                const mode = document.getElementById('mode');
+                if (mode) mode.textContent = 'planner';
+                scrollToBottom();
               } else if (event.type === 'token') {
                 if (!received) {
                   received = true;
@@ -467,8 +677,9 @@
               } else if (event.type === 'error') {
                 throw new Error(event.message);
               } else if (event.type === 'done') {
-                status.remove();
                 cursor.remove();
+                if (received) status.remove();
+                else status.classList.add('quiet');
               }
             });
           } catch (error) {
@@ -480,7 +691,6 @@
             else target.body.append(document.createTextNode('\n\n[stopped: ' + message + ']'));
           } finally {
             cursor.remove();
-            status.remove();
             setStreaming(false);
             inputEl.focus();
           }

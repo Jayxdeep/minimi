@@ -162,12 +162,15 @@ export interface Db {
   insertMessage(input: InsertMessageInput): Message;
   listMessagesBySession(sessionId: string): Message[];
   listMessagesByTimeRange(start: string, end: string): Message[];
+  /** Global, newest-first selection then returned oldest-first for prompt order. */
+  listRecentMessages(sinceIso: string, limit: number): Message[];
   searchMessages(keywords: readonly string[], options?: KeywordSearchOptions): Message[];
 
   insertSnapshot(input: InsertSnapshotInput): Snapshot;
   getSnapshot(id: string): Snapshot | undefined;
   listSnapshotsByTopic(topicKey: string): Snapshot[];
   findSnapshotsByTimeRange(start: string, end: string): Snapshot[];
+  listRecentSnapshots(sinceIso: string, limit: number): Snapshot[];
 
   countMessages(sessionId?: string): number;
   ping(): boolean;
@@ -291,6 +294,19 @@ export function createDb(dbPath: string): Db {
         .map(mapMessage);
     },
 
+    listRecentMessages(sinceIso, limit) {
+      return raw
+        .prepare<[string, number], MessageRow>(
+          `SELECT ${MESSAGE_COLUMNS} FROM messages
+           WHERE created_at >= ?
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT ?`,
+        )
+        .all(sinceIso, limit)
+        .reverse()
+        .map(mapMessage);
+    },
+
     searchMessages(keywords, options = {}) {
       const match = toFtsQuery(keywords);
       if (!match) return [];
@@ -384,6 +400,19 @@ export function createDb(dbPath: string): Db {
            ORDER BY observed_at ASC, rowid ASC`,
         )
         .all(lo, hi)
+        .map(mapSnapshot);
+    },
+
+    listRecentSnapshots(sinceIso, limit) {
+      return raw
+        .prepare<[string, number], SnapshotRow>(
+          `SELECT ${SNAPSHOT_COLUMNS} FROM snapshots
+           WHERE observed_at >= ?
+           ORDER BY observed_at DESC, rowid DESC
+           LIMIT ?`,
+        )
+        .all(sinceIso, limit)
+        .reverse()
         .map(mapSnapshot);
     },
 
