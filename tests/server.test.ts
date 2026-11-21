@@ -85,6 +85,31 @@ describe('static app', () => {
     expect(response.text).toContain('id="chat"');
   });
 
+  it('serves the split frontend assets', async () => {
+    const css = await request(app).get('/styles.css');
+    expect(css.status).toBe(200);
+    expect(css.headers['content-type']).toContain('text/css');
+
+    for (const asset of ['/js/main.js', '/js/ui.js', '/js/sse.js', '/js/api.js']) {
+      const js = await request(app).get(asset);
+      expect(js.status, asset).toBe(200);
+      expect(js.headers['content-type'], asset).toContain('javascript');
+    }
+  });
+
+  it('keeps index.html free of inline css and js', async () => {
+    const response = await request(app).get('/');
+    const html = response.text;
+
+    expect(html).toContain('href="/styles.css"');
+    expect(html).not.toContain('<style');
+
+    const scripts = html.match(/<script[^>]*>/g) ?? [];
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]).toContain('src="/js/main.js"');
+    expect(scripts[0]).toContain('type="module"');
+  });
+
   it('404s on unknown routes', async () => {
     const response = await request(app).get('/nope');
     expect(response.status).toBe(404);

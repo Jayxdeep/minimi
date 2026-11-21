@@ -274,6 +274,13 @@ headers immediately, disables Nagle, and all writes go through a guard that drop
 after close. On `close`: stop generating, do not persist the assistant message, do not write
 a snapshot. Partial state is worse than no state.
 
+The browser side is plain ES modules served directly (`public/js/`): `api.js` owns the POST,
+`sse.js` owns framing, `ui.js` owns the DOM, `main.js` owns the turn. The frame parser is a
+pure `createSseParser(onEvent)` and is unit-tested in Node, including frames split mid-JSON
+and mid-UTF-8. Handler exceptions are deliberately outside the JSON `try/catch`, so a
+terminal `{type:"error"}` actually stops the stream instead of being swallowed by the
+parser.
+
 ## 9. Failure ladder
 
 | Failure                        | Behaviour                                                        |
@@ -317,12 +324,12 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 1): 56 tests covering migrations, schema shape, time-range
-boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing, exact
-echo reconstruction, session reuse, disconnect safety, memory-index construction,
-planner parsing (fences, prose, bad JSON), sanitisation, the single retry, prompt
-injection, and planner-mode streaming. The LLM is a fake; `npm test` never touches the
-network.
+Current suite (Phase 1): 71 tests covering migrations, schema shape, time-range
+boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing on both
+sides (including split frames), exact echo reconstruction, session reuse, disconnect
+safety, memory-index construction, planner parsing (fences, prose, bad JSON),
+sanitisation, the single retry, prompt injection, and planner-mode streaming. The LLM is a
+fake; `npm test` never touches the network.
 
 ## 12. Security and limits
 

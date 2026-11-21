@@ -117,10 +117,20 @@ src/
     schema.sql     tables, indexes, FTS5 mirror + triggers
     index.ts       createDb(), migrations, typed queries
   routes/chat.ts   POST /chat
-public/index.html  vanilla chat UI (no build step)
-tests/             56 tests, all offline
+public/
+  index.html       markup only
+  styles.css
+  js/
+    main.js        entry: wires the form, runs one turn
+    api.js         POST /chat transport + typed errors
+    sse.js         SSE frame parser (pure, unit-tested)
+    ui.js          ChatView, bubbles, plan card (DOM only)
+    session.js     session id persistence
+tests/             71 tests, all offline
 data/              SQLite lives here (gitignored)
 ```
+
+No bundler, no build step: the browser loads these as native ES modules.
 
 ## Testing
 
@@ -129,10 +139,10 @@ npm test        # offline: in-memory SQLite, no API keys, no network
 ```
 
 The suite covers migration idempotency, schema shape, time-range boundaries, keyword
-recall, snapshot round-trips, foreign-key enforcement, SSE framing, disconnect safety,
-exact echo reconstruction, memory-index construction, planner parsing/sanitisation, the
-single schema retry, and planner-mode streaming. The LLM is a fake, so `npm test` never
-touches the network.
+recall, snapshot round-trips, foreign-key enforcement, SSE framing (including byte-split
+frames and multi-byte characters), disconnect safety, exact echo reconstruction,
+memory-index construction, planner parsing/sanitisation, the single schema retry, and
+planner-mode streaming. The LLM is a fake, so `npm test` never touches the network.
 
 ## Design
 
