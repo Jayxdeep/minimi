@@ -21,24 +21,22 @@ function setStreaming(value) {
   streaming = value;
   sendEl.disabled = value;
   inputEl.disabled = value;
-  sendEl.textContent = value ? '…' : 'Send';
+  const labelEl = sendEl.querySelector('.send-label');
+  if (labelEl) {
+    labelEl.textContent = value ? '…' : 'Send';
+  } else {
+    sendEl.textContent = value ? '…' : 'Send';
+  }
   document.getElementById('chat')?.setAttribute('aria-busy', String(value));
 }
 
 function autoGrow() {
   inputEl.style.height = 'auto';
-  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 180)}px`;
+  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 200)}px`;
 }
 
 /**
  * One turn: POST, consume SSE, update the bubble.
- *
- * The event union is the whole contract:
- *   status → progress line
- *   plan   → planner card
- *   token  → append text
- *   error  → terminal, thrown so the parser stops reading
- *   done   → terminal
  */
 async function runTurn(text) {
   view.addMessage('user', text);
@@ -116,6 +114,19 @@ newSessionEl.addEventListener('click', () => {
   view.clear();
   view.showSession(resetSessionId());
   inputEl.focus();
+});
+
+// Setup prompt suggestions from the empty state
+document.querySelectorAll('.suggestion-card').forEach((card) => {
+  card.addEventListener('click', () => {
+    if (streaming) return;
+    const prompt = card.getAttribute('data-prompt');
+    if (prompt) {
+      inputEl.value = prompt;
+      autoGrow();
+      formEl.requestSubmit();
+    }
+  });
 });
 
 view.showSession(getSessionId());

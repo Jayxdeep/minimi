@@ -17,84 +17,101 @@ function element(tag, className, text = '') {
 
 export function shortStamp(iso) {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(String(iso || ''));
-  return match ? `${match[1]} ${match[2]}` : String(iso || '?');
+  return match ? `${match[1]} ${match[2]}` : String(iso || '—');
 }
 
-function chip(text) {
-  return element('span', 'chip', text);
+function chip(text, isEmpty = false) {
+  const node = element('span', `plan-chip ${isEmpty ? 'empty-chip' : ''}`.trim(), text);
+  return node;
 }
 
 function section(label, chips) {
-  const wrap = document.createElement('div');
-  const head = element('div', 'plan-label', label);
-  const line = element('div', 'plan-line');
-  line.append(...(chips.length > 0 ? chips : [chip('—')]));
+  const wrap = element('div', 'plan-section');
+  const head = element('div', 'plan-sec-title', label);
+  const line = element('div', 'chip-group');
+  line.append(...(chips.length > 0 ? chips : [chip('none', true)]));
   wrap.append(head, line);
   return wrap;
 }
 
-/** Render the planner output as a compact card plus raw JSON on demand. */
+/** Render the planner output as a clean structured card plus raw JSON on demand. */
 export function renderPlan(bubble, plan) {
   const details = document.createElement('details');
-  details.className = 'plan';
+  details.className = 'plan-card';
   details.open = true;
 
   const summary = document.createElement('summary');
-  const caret = element('span', 'caret', '▸');
-  const title = element('span', '', 'plan');
-  const intent = document.createElement('em');
-  intent.textContent = plan.intent || 'unknown';
-  summary.append(caret, title, intent);
+  
+  const left = element('div', 'plan-header-left');
+  const caret = element('span', 'plan-caret', '▸');
+  const title = element('span', 'plan-title', 'Execution Plan');
+  
+  const intentStr = String(plan.intent || 'unknown').toLowerCase();
+  const intentBadge = element('span', `intent-badge intent-${intentStr}`, intentStr);
 
-  const body = element('div', 'plan-body');
+  left.append(caret, title, intentBadge);
+  summary.append(left);
 
+  const body = element('div', 'plan-content');
+
+  // Time expressions
   const refs = (plan.temporal_refs || []).map((ref) =>
     chip(`${ref.expression} → ${shortStamp(ref.resolved_range[0])}`),
   );
-  body.append(section('time', refs));
+  body.append(section('temporal references', refs));
 
+  // Memory window
   const memoryWindow = plan.memory && plan.memory.window;
   body.append(
     section(
-      'memory window',
+      'indexed memory window',
       memoryWindow
         ? [chip(`${shortStamp(memoryWindow[0])} → ${shortStamp(memoryWindow[1])}`)]
         : [],
     ),
   );
 
+  // Recall keywords
   body.append(
     section(
       'recall keywords',
-      ((plan.memory && plan.memory.keywords) || []).map((keyword) => chip(keyword)),
+      ((plan.memory && plan.memory.keywords) || []).map((k) => chip(k)),
     ),
   );
 
+  // Snapshot re-verifications
   body.append(
     section(
-      're-verify',
+      're-verify claims',
       (plan.verify_snapshot_ids || []).map((id) =>
-        chip(`snapshot ${String(id).slice(0, 8)}`),
+        chip(`snapshot #${String(id).slice(0, 8)}`),
       ),
     ),
   );
 
-  const searchWrap = document.createElement('div');
-  const searchHead = element('div', 'plan-label', 'search plan');
-  const list = document.createElement('ol');
+  // Search queries
+  const searchWrap = element('div', 'plan-section');
+  const searchHead = element('div', 'plan-sec-title', 'search queries');
+  const list = element('ol', 'search-queries-list');
   const queries = plan.search_plan || [];
 
   if (queries.length === 0) {
-    const item = document.createElement('li');
-    item.textContent = 'no searches';
+    const item = element('li', 'search-query-item');
+    item.textContent = 'no live search needed';
+    item.style.color = 'var(--text-faint)';
     list.append(item);
   } else {
     for (const query of queries) {
-      const item = document.createElement('li');
-      item.append(document.createTextNode(query.query));
-      const cite = document.createElement('cite');
-      cite.textContent = query.mode + (query.since ? ` · since ${query.since}` : '');
-      item.append(cite);
+      const item = element('li', 'search-query-item');
+      const textSpan = element('span', 'query-text', query.query);
+      item.append(textSpan);
+      
+      const metaSpan = element(
+        'cite',
+        'query-meta',
+        query.mode + (query.since ? ` · since ${query.since}` : ''),
+      );
+      item.append(metaSpan);
       list.append(item);
     }
   }
@@ -102,12 +119,10 @@ export function renderPlan(bubble, plan) {
   searchWrap.append(searchHead, list);
   body.append(searchWrap);
 
-  const rawWrap = document.createElement('details');
-  rawWrap.className = 'raw';
-  const rawSummary = document.createElement('summary');
-  rawSummary.textContent = 'raw json';
-  const raw = document.createElement('pre');
-  raw.textContent = JSON.stringify(plan, null, 2);
+  // Raw JSON inspect
+  const rawWrap = element('details', 'plan-raw-details');
+  const rawSummary = element('summary', '', 'Inspect raw planner JSON');
+  const raw = element('pre', '', JSON.stringify(plan, null, 2));
   rawWrap.append(rawSummary, raw);
 
   details.append(summary, body, rawWrap);
@@ -116,8 +131,6 @@ export function renderPlan(bubble, plan) {
 
 /**
  * One assistant or user bubble, with its own transient status/cursor state.
- * Keeping this state here (rather than in the turn runner) means "was a token
- * received?" is answered in exactly one place.
  */
 export class MessageView {
   /**
@@ -136,10 +149,19 @@ export class MessageView {
 
   setStatus(text) {
     if (!this.statusEl) {
-      this.statusEl = element('div', 'status');
+      this.statusEl = element('div', 'turn-status');
+      const spinner = element('span', 'status-spinner');
+      const textNode = element('span', 'status-text', text);
+      this.statusEl.append(spinner, textNode);
       this.bubble.append(this.statusEl);
+    } else {
+      const textNode = this.statusEl.querySelector('.status-text');
+      if (textNode) {
+        textNode.textContent = text;
+      } else {
+        this.statusEl.textContent = text;
+      }
     }
-    this.statusEl.textContent = text;
     this.statusEl.classList.remove('quiet');
   }
 
@@ -157,7 +179,7 @@ export class MessageView {
     }
 
     if (!this.cursor) {
-      this.cursor = element('span', 'cursor');
+      this.cursor = element('span', 'typing-cursor');
       this.body.append(this.cursor);
     }
 
@@ -207,14 +229,27 @@ export class ChatView {
   }
 
   addMessage(role, text = '') {
-    this.elements.emptyEl.hidden = true;
+    if (this.elements.emptyEl) {
+      this.elements.emptyEl.hidden = true;
+    }
 
-    const row = element('div', `row ${role}`);
+    const row = element('div', `msg-row ${role}`);
     const bubble = element('div', 'bubble');
-    const who = element('div', 'who', role === 'user' ? 'you' : 'minimi');
-    const body = element('div', 'body', text);
 
-    bubble.append(who, body);
+    let body;
+    if (role === 'assistant') {
+      const whoHeader = element('div', 'who-header');
+      const avatar = element('span', 'agent-avatar', 'm');
+      const who = element('span', 'who', 'minimi');
+      whoHeader.append(avatar, who);
+      body = element('div', 'body', text);
+      bubble.append(whoHeader, body);
+    } else {
+      const who = element('div', 'who', 'you');
+      body = element('div', 'body', text);
+      bubble.append(who, body);
+    }
+
     row.append(bubble);
     this.elements.messagesEl.append(row);
     this.scrollToBottom();
@@ -223,25 +258,33 @@ export class ChatView {
   }
 
   setMode(mode) {
-    this.elements.modeEl.textContent = mode;
-    this.elements.modeEl.title = `Streaming mode: ${mode}`;
+    if (this.elements.modeEl) {
+      this.elements.modeEl.textContent = mode;
+      this.elements.modeEl.parentElement?.setAttribute('title', `Streaming mode: ${mode}`);
+    }
   }
 
   showSession(id) {
-    this.elements.sessionEl.textContent = id.slice(0, 8);
-    this.elements.sessionEl.title = id;
+    if (this.elements.sessionEl) {
+      this.elements.sessionEl.textContent = id.slice(0, 8);
+      this.elements.sessionEl.parentElement?.setAttribute('title', `Session ID: ${id}`);
+    }
   }
 
   clear() {
     this.elements.messagesEl.replaceChildren();
-    this.elements.emptyEl.hidden = false;
+    if (this.elements.emptyEl) {
+      this.elements.emptyEl.hidden = false;
+    }
   }
 
   scrollToBottom() {
-    const distance =
-      document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
-    if (distance < 240) {
-      window.scrollTo({ top: document.documentElement.scrollHeight });
-    }
+    const chatViewport = document.getElementById('chat') || document.documentElement;
+    requestAnimationFrame(() => {
+      chatViewport.scrollTo({
+        top: chatViewport.scrollHeight,
+        behavior: 'smooth',
+      });
+    });
   }
 }

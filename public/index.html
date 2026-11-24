@@ -2,47 +2,112 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>minimi — a chat agent that remembers</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..400&family=Plus+Jakarta+Sans:wght@400;450;500;600&family=JetBrains+Mono:wght@400;450;500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header>
-      <div class="brand">minimi <small>chat agent · one tool</small></div>
-      <div class="meta">
-        <span class="pill" id="mode" title="Streaming mode">echo</span>
-        <span id="session-label">session</span>
-        <button id="new-session" type="button">New session</button>
-      </div>
-    </header>
+    <div class="app-layout">
+      <header class="app-header">
+        <div class="header-inner">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"></circle>
+                <path d="M12 7v5l3 2"></path>
+              </svg>
+            </span>
+            <div class="brand-text">
+              <span class="brand-name">minimi</span>
+              <span class="brand-tag">temporal recall</span>
+            </div>
+          </div>
 
-    <main id="chat">
-      <div class="empty" id="empty">
-        <h1>Temporal recall, first.</h1>
-        <p>Ask something, then come back and ask what changed.</p>
-        <p>The planner resolves time, picks recall keywords, and drafts searches.</p>
-        <p><code>“What did I ask you on 3 November? Is your answer still correct today?”</code></p>
-      </div>
-      <div id="messages"></div>
-    </main>
+          <div class="meta-controls">
+            <div class="status-indicator" id="mode-badge" title="Streaming mode">
+              <span class="status-dot"></span>
+              <span class="mode-label" id="mode">echo</span>
+            </div>
+            <div class="session-badge" title="Active session">
+              <span class="session-label-prefix">ep</span>
+              <span id="session-label">session</span>
+            </div>
+            <button id="new-session" type="button" class="btn-ghost" title="Start a fresh conversation session">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>New</span>
+            </button>
+          </div>
+        </div>
+      </header>
 
-    <footer>
-      <form id="composer">
-        <textarea
-          id="input"
-          rows="1"
-          maxlength="8000"
-          placeholder="Ask something…"
-          autocomplete="off"
-          aria-label="Message"
-        ></textarea>
-        <button id="send" type="submit">Send</button>
-      </form>
-      <div class="hint">
-        Enter to send · Shift + Enter for a newline · Phase 1: planner only
-      </div>
-    </footer>
+      <main id="chat" class="chat-viewport">
+        <div class="chat-container">
+          <div class="empty-state" id="empty">
+            <div class="empty-badge">Agent with Grounded Temporal Memory</div>
+            <h1 class="empty-title">Memory as an architectural foundation, not an afterthought.</h1>
+            <p class="empty-desc">
+              Every turn is captured as an immutable episode. Claims are verified, timestamped, and indexed so you can ask what changed over time.
+            </p>
+            <div class="prompt-suggestions">
+              <div class="prompt-suggestions-label">Try asking</div>
+              <div class="suggestion-cards">
+                <button type="button" class="suggestion-card" data-prompt="What did I ask you on 3 November? Is your answer still correct today?">
+                  <span class="card-quote">“What did I ask you on 3 November? Is your answer still correct today?”</span>
+                  <span class="card-hint">Triggers temporal resolution & memory recall</span>
+                </button>
+                <button type="button" class="suggestion-card" data-prompt="What was the latest release date of Node.js 22? Has anything changed since last week?">
+                  <span class="card-quote">“What was the latest release date of Node.js 22? Has anything changed since last week?”</span>
+                  <span class="card-hint">Resolves time reference and drafts search plan</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div id="messages" class="messages-flow"></div>
+        </div>
+      </main>
+
+      <footer class="app-footer">
+        <div class="footer-inner">
+          <form id="composer" class="composer-card">
+            <textarea
+              id="input"
+              rows="1"
+              maxlength="8000"
+              placeholder="Ask anything, recall previous discussions, or check changes…"
+              autocomplete="off"
+              aria-label="Message prompt"
+            ></textarea>
+            <div class="composer-actions">
+              <button id="send" type="submit" class="send-btn" aria-label="Send message" title="Send (Enter)">
+                <span class="send-label">Send</span>
+                <svg class="send-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </div>
+          </form>
+          <div class="composer-footnote">
+            <span><kbd>Return</kbd> to send</span>
+            <span class="bullet">·</span>
+            <span><kbd>Shift</kbd> + <kbd>Return</kbd> for newline</span>
+            <span class="bullet">·</span>
+            <span class="phase-info">Phase 1: temporal planner active</span>
+          </div>
+        </div>
+      </footer>
+    </div>
 
     <script type="module" src="/js/main.js"></script>
   </body>
