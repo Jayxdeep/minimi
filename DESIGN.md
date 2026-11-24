@@ -94,6 +94,13 @@ Three consequences worth defending:
   the entity set is stable, so the chain of observations is findable in one indexed query.
   `supersedes_id` links an observation to the one it re-checks.
 
+**Atomicity.** `insertSnapshot` is deliberately not wrapped in an explicit transaction: it
+is one `INSERT` (SQLite autocommit, atomic and durable on return) followed by a synchronous
+read-back, with no `await` between them, so no other turn in the process can interleave.
+Phase 3 introduces the first genuinely multi-statement write — the assistant episode and its
+snapshot must agree — and that pair will run inside `raw.transaction(fn).immediate()`, so a
+turn persists both or neither. A transaction never spans an `await`.
+
 ### Keyword recall, not embeddings
 
 Time windows alone cannot find "the shortlist we made on Monday" if the memory window is
@@ -365,6 +372,6 @@ fake; `npm test` never touches the network.
 | 0.5   | README, this document, phase log                                        | —                                       |
 | 1     | Planner + `LLMClient`/`DeepSeekClient`, memory index before planning, Zod validation + one retry, deterministic sanitisation, plan SSE frame | Search; synthesis |
 | 2     | `SearchProvider` (Tavily) + deterministic fan-out + recall merge         | Synthesis                               |
-| 3     | Synthesizer streaming, fence parser, citation checks, snapshots         | Cross-turn change wiring                |
+| 3     | Synthesizer streaming, fence parser, citation checks, snapshots; assistant episode + snapshot written in one `raw.transaction(fn).immediate()` | Cross-turn change wiring |
 | 4     | Recall + verification wiring; all three canonical queries end-to-end     | Eval harness                            |
 | 5     | Offline fixture evals, live eval runner, design polish                  | —                                       |
