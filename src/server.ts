@@ -6,6 +6,8 @@ import { createDb, type Db } from './db';
 import { DeepSeekClient } from './llm/deepseek';
 import { createPlanner, type Planner } from './planner';
 import { createChatRouter } from './routes/chat';
+import { TavilyProvider } from './search/tavily';
+import type { SearchProvider } from './search/types';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
 
@@ -16,6 +18,8 @@ export interface AppOptions {
    * the developer happens to have a key in `.env`.
    */
   planner?: Planner | null;
+  /** Explicit for the same reason: tests use fakes or null. */
+  searchProvider?: SearchProvider | null;
   now?: () => Date;
 }
 
@@ -36,6 +40,7 @@ export function createApp(db: Db, options: AppOptions = {}): Express {
       db,
       chunkDelayMs: options.chunkDelayMs ?? config.streamTokenDelayMs,
       planner: options.planner ?? null,
+      searchProvider: options.searchProvider ?? null,
       ...(options.now ? { now: options.now } : {}),
     }),
   );
@@ -61,15 +66,18 @@ export function startServer(): void {
   db.migrate();
 
   const planner = buildPlanner();
-  const app = createApp(db, { planner });
+  const searchProvider = new TavilyProvider({ apiKey: config.tavilyApiKey });
+  const app = createApp(db, { planner, searchProvider });
 
   const server = app.listen(config.port, () => {
     const mode = planner
       ? `planner (${config.deepseekModel})`
       : 'echo (no DEEPSEEK_API_KEY)';
+    const search = config.tavilyApiKey ? 'tavily' : 'stub (no TAVILY_API_KEY)';
     console.log(`minimi-agent  http://localhost:${config.port}`);
     console.log(`db: ${path.resolve(config.dbPath)}`);
     console.log(`mode: ${mode}`);
+    console.log(`search: ${search}`);
   });
 
   const shutdown = (signal: string) => {

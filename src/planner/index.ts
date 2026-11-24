@@ -39,7 +39,7 @@ export class PlannerError extends Error {
 /** Exactly one retry. Hard cap, not a setting. */
 export const MAX_PLANNER_ATTEMPTS = 2;
 
-const MAX_SEARCH_QUERIES = 4;
+const MAX_SEARCH_QUERIES = 6;
 const MAX_KEYWORDS = 8;
 const MAX_KEYWORD_CHARS = 40;
 const MAX_QUERY_CHARS = 200;

@@ -56,10 +56,10 @@ once with the validation error fed back. That is a retry, not a call: worst case
 planner attempts, still one synthesizer. The synthesizer is never retried mid-stream,
 because half an answer cannot be un-said.
 
-**Status.** Call 1 (the planner) and the memory index are implemented. A planner-mode turn
-therefore persists only the user episode: there is no synthesized answer yet, and storing
-a fake one would poison later recall. That single line changes in Phase 3, not the
-pipeline around it.
+**Status.** Call 1 (the planner), the memory index and the search fan-out are implemented.
+A planner-mode turn therefore persists only the user episode: there is no synthesized
+answer yet, and storing a fake one would poison later recall. Phase 3 replaces the tail of
+the turn; the pipeline around it does not change.
 
 ## 3. Episodes and observations are different things
 
@@ -184,7 +184,7 @@ What "disposes" means concretely, all deterministic and all tested:
 | `now_iso`                           | overwritten with the server clock; never trusted            |
 | implausible / inverted date range   | dropped; an invalid `memory.window` becomes `null`          |
 | `verify_snapshot_ids`               | filtered to ids the planner was actually shown              |
-| > 4 search queries, duplicates      | truncated to 4, case-insensitively deduped, whitespace collapsed |
+| > 6 search queries, duplicates      | truncated to 6, case-insensitively deduped, whitespace collapsed |
 | empty query                         | dropped                                                     |
 | `since` not `YYYY-MM-DD`            | removed, query kept                                         |
 | > 8 keywords                        | truncated and lowercased                                    |
@@ -249,18 +249,38 @@ One provider interface, one implementation in week 1:
 
 ```ts
 interface SearchProvider {
-  search(query: string, opts: { mode: 'quick'|'deep'|'news'; since?: string; limit?: number }): Promise<SearchResult[]>;
+  search(query: string, opts: { mode: 'quick' | 'deep' | 'news'; since?: string }): Promise<SearchResult[]>;
 }
 ```
 
-Tavily is primary because it returns snippets and optional dates in one call; Exa is stubbed
-behind the same interface. Fan-out is capped (≤ 4 queries), concurrent, and every request
-has a timeout.
+Tavily is primary because it returns a snippet and an optional publish date in one call;
+Exa is stubbed behind the same interface. Concrete choices:
+
+| Our mode | Tavily `topic` | `search_depth` | `max_results` |
+| -------- | -------------- | -------------- | ------------- |
+| `quick`  | general        | basic          | 5             |
+| `news`   | news           | basic          | 5             |
+| `deep`   | general        | advanced       | 8             |
+
+- Auth is `Authorization: Bearer …`, not a key in the JSON body, so the key never lands in
+  a request log or an error dump.
+- `since` maps to `start_date` only when it matches `YYYY-MM-DD`; anything else is dropped.
+- `include_published_date: true` is always requested. Without it, general (non-news)
+  searches omit `published_date`, and change detection loses its only usable timestamp.
+- Fan-out is capped at **6 queries in code**, independently of the planner, executed with
+  `Promise.allSettled` and an 8-second timeout per request. One failed query becomes an
+  empty group and is logged; it never fails the turn. This is the one place where partial
+  success is better than total failure.
+- No API key returns a single clearly-labelled stub result (`Tavily key missing`) rather
+  than silently pretending there are no results. Tests and key-less demos exercise the same
+  code path.
+- Results are passed through as `{url, title, snippet, publishedDate?}`. This is also what
+  Phase 3 will cite and what a snapshot will store.
 
 Honest limitation: date filters (`start_date`, `days`, `time_range`) are reliable on news
 topic searches, not on arbitrary vendor pages, and most pricing pages carry no crawl date at
 all. So **time filtering is a hint, not the mechanism**. Recency is judged from
-`published_date` plus content, and recorded as `observed_at`. The design does not pretend a
+`publishedDate` plus content, and recorded as `observed_at`. The design does not pretend a
 search API can tell us when a price changed.
 
 ## 8. Streaming contract
@@ -269,11 +289,13 @@ SSE over `POST`, read with `fetch` + `ReadableStream` (no `EventSource`, because
 POST). Frames are newline-delimited JSON:
 
 ```text
-data: {"type":"status","text":"searching 3 sources…"}
-data: {"type":"plan","plan":{...}}        // dev-visible planner output
+data: {"type":"status","text":"planning…"}
+data: {"type":"plan","plan":{...}}          // dev-visible planner output
+data: {"type":"searching","queries":["…"]}  // fan-out started
+data: {"type":"search_results","data":[…]}  // grouped by query, raw
 data: {"type":"token","text":"As of "}
-data: {"type":"error","message":"..."}    // terminal
-data: {"type":"done"}                     // terminal
+data: {"type":"error","message":"..."}      // terminal
+data: {"type":"done"}                       // terminal
 ```
 
 Exactly one terminal frame per turn. The response sets `X-Accel-Buffering: no`, flushes
@@ -331,12 +353,13 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 1): 71 tests covering migrations, schema shape, time-range
+Current suite (Phase 2): 85 tests covering migrations, schema shape, time-range
 boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing on both
 sides (including split frames), exact echo reconstruction, session reuse, disconnect
 safety, memory-index construction, planner parsing (fences, prose, bad JSON),
-sanitisation, the single retry, prompt injection, and planner-mode streaming. The LLM is a
-fake; `npm test` never touches the network.
+sanitisation, the single retry, prompt injection, planner-mode streaming, Tavily request
+mapping (mode, `since`, auth header), fan-out caps, and per-query failure isolation. The
+LLM and the search provider are fakes; `npm test` never touches the network.
 
 ## 12. Security and limits
 
@@ -371,7 +394,7 @@ fake; `npm test` never touches the network.
 | 0.4   | Echo streaming, session upsert, episode persistence, disconnect safety  | Model calls absent                      |
 | 0.5   | README, this document, phase log                                        | —                                       |
 | 1     | Planner + `LLMClient`/`DeepSeekClient`, memory index before planning, Zod validation + one retry, deterministic sanitisation, plan SSE frame | Search; synthesis |
-| 2     | `SearchProvider` (Tavily) + deterministic fan-out + recall merge         | Synthesis                               |
+| 2     | Tavily provider (mode/`since` mapping, offline stub), parallel fan-out (≤ 6, failure-isolated), `searching`/`search_results` SSE, Web Results card | Synthesis; recall merge moves to Phase 4 |
 | 3     | Synthesizer streaming, fence parser, citation checks, snapshots; assistant episode + snapshot written in one `raw.transaction(fn).immediate()` | Cross-turn change wiring |
 | 4     | Recall + verification wiring; all three canonical queries end-to-end     | Eval harness                            |
 | 5     | Offline fixture evals, live eval runner, design polish                  | —                                       |

@@ -129,6 +129,99 @@ export function renderPlan(bubble, plan) {
   bubble.append(details);
 }
 
+function safeUrl(raw) {
+  try {
+    const url = new URL(String(raw));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function prettyUrl(href) {
+  try {
+    const url = new URL(href);
+    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '');
+    return url.hostname.replace(/^www\./, '') + path;
+  } catch {
+    return href;
+  }
+}
+
+/** Render grouped search results as a collapsible "Web Results" card. */
+export function renderSearchResults(bubble, groups) {
+  const total = groups.reduce((count, group) => count + group.results.length, 0);
+
+  const details = document.createElement('details');
+  details.className = 'results-card';
+  details.open = true;
+
+  const summary = document.createElement('summary');
+  const left = element('div', 'plan-header-left');
+  left.append(
+    element('span', 'plan-caret', '▸'),
+    element('span', 'plan-title', 'Web Results'),
+    element(
+      'span',
+      'results-count',
+      `${total} ${total === 1 ? 'source' : 'sources'}`,
+    ),
+  );
+  summary.append(left);
+
+  const content = element('div', 'results-content');
+
+  if (groups.length === 0) {
+    content.append(element('p', 'results-empty', 'No queries were run.'));
+  }
+
+  for (const group of groups) {
+    const section = element('div', 'results-group');
+
+    const head = element('div', 'results-query');
+    head.append(
+      element('span', 'query-text', group.query),
+      element('span', 'query-count', String(group.results.length)),
+    );
+
+    const list = element('ul', 'results-list');
+
+    if (group.results.length === 0) {
+      list.append(element('li', 'results-empty', 'No results for this query.'));
+    } else {
+      for (const result of group.results) {
+        const item = element('li', 'result-item');
+        const href = safeUrl(result.url);
+        const label = result.title || href || 'Untitled result';
+
+        if (href) {
+          const link = element('a', 'result-title', label);
+          link.href = href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          item.append(link);
+          item.append(element('div', 'result-url', prettyUrl(href)));
+        } else {
+          item.append(element('span', 'result-title', label));
+        }
+
+        if (result.snippet) {
+          item.append(element('p', 'result-snippet', result.snippet));
+        }
+
+        list.append(item);
+      }
+    }
+
+    section.append(head, list);
+    content.append(section);
+  }
+
+  details.append(summary, content);
+  bubble.append(details);
+}
+
 /**
  * One assistant or user bubble, with its own transient status/cursor state.
  */
@@ -167,6 +260,10 @@ export class MessageView {
 
   addPlan(plan) {
     renderPlan(this.bubble, plan);
+  }
+
+  addSearchResults(groups) {
+    renderSearchResults(this.bubble, groups);
   }
 
   appendToken(text) {

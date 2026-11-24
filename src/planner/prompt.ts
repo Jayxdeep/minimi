@@ -15,7 +15,7 @@ Rules:
   * "chat" — small talk, or anything that needs neither search nor memory.
 - memory.window: a UTC [start, end] pair only when the user refers to a past time; otherwise null. This drives exact episode recall.
 - memory.keywords: 2-6 lowercase terms for keyword recall over stored messages. Include product and entity names. These find memories that fall outside the time window.
-- search_plan: 0-4 web queries, phrased the way a person would search. Use mode "news" for releases and announcements, "quick" for pricing and product pages, "deep" only when one answer needs several pages. Omit since unless recency matters; when present it must be YYYY-MM-DD.
+- search_plan: 0-6 web queries, phrased the way a person would search. Use mode "news" for releases and announcements, "quick" for pricing and product pages, "deep" only when one answer needs several pages. Omit since unless recency matters; when present it must be YYYY-MM-DD.
 - verify_snapshot_ids: copy ids ONLY from lines labelled "snapshot" in MEMORY INDEX, and only when the user asks whether a previous answer still holds. Never invent ids. Never reference episodes.
 - now_iso must equal NOW_UTC exactly.
 

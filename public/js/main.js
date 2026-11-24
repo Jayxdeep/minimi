@@ -63,6 +63,20 @@ async function runTurn(text) {
           view.scrollToBottom();
           break;
 
+        case 'searching': {
+          const count = Array.isArray(event.queries) ? event.queries.length : 0;
+          target.setStatus(
+            `searching ${count} ${count === 1 ? 'query' : 'queries'}…`,
+          );
+          break;
+        }
+
+        case 'search_results':
+          target.addSearchResults(event.data || []);
+          view.setMode('search');
+          view.scrollToBottom();
+          break;
+
         case 'token':
           target.appendToken(event.text);
           view.scrollToBottom();

@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { Db } from '../db';
 import { buildMemoryIndex } from '../memory';
 import { degradedPlan, PlannerError, type Planner } from '../planner';
+import { executeSearchPlan } from '../search/fanout';
+import type { SearchProvider } from '../search/types';
 import { openSse, type SseStream } from '../sse';
 import { safeTimezone } from '../time';
 import { ChatRequestSchema, type PlannerOutput } from '../types';
@@ -12,6 +14,8 @@ export interface ChatRouterDeps {
   chunkDelayMs: number;
   /** Null/absent means "no model configured": echo mode. */
   planner?: Planner | null;
+  /** Null/absent means "no search configured": plan-only turns. */
+  searchProvider?: SearchProvider | null;
   /** Injectable clock, for deterministic tests. */
   now?: () => Date;
 }
@@ -89,6 +93,7 @@ async function echoTurn(
 async function planTurn(
   stream: SseStream,
   planner: Planner,
+  searchProvider: SearchProvider | null,
   input: {
     message: string;
     userTz: string;
@@ -131,9 +136,39 @@ async function planTurn(
   }
 
   stream.send({ type: 'plan', plan });
+
+  const queries = plan.search_plan;
+  const willSearch = searchProvider !== null && queries.length > 0;
+
+  if (willSearch && searchProvider) {
+    stream.send({
+      type: 'searching',
+      queries: queries.map((entry) => entry.query),
+    });
+
+    try {
+      const grouped = await executeSearchPlan(queries, searchProvider);
+      if (stream.closed) return;
+      stream.send({ type: 'search_results', data: grouped });
+    } catch (error) {
+      // executeSearchPlan is total by design; this is belt-and-braces so a
+      // search bug can never turn a planned turn into a 500.
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('[chat] search fan-out failed:', detail);
+    }
+  }
+
+  if (stream.closed) return;
+
+  const note = willSearch
+    ? `search complete (${queries.length} ${queries.length === 1 ? 'query' : 'queries'})`
+    : searchProvider === null
+      ? 'search disabled'
+      : 'no search needed';
+
   stream.send({
     type: 'status',
-    text: 'plan only — search and synthesis arrive in phases 2–3',
+    text: `${note} — synthesis arrives in phase 3`,
   });
   stream.send({ type: 'done' });
   stream.end();
@@ -142,6 +177,7 @@ async function planTurn(
 export function createChatRouter(deps: ChatRouterDeps): Router {
   const router = Router();
   const planner = deps.planner ?? null;
+  const searchProvider = deps.searchProvider ?? null;
   const now = deps.now ?? (() => new Date());
 
   router.post('/chat', async (req, res) => {
@@ -199,6 +235,7 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
       await planTurn(
         stream,
         planner,
+        searchProvider,
         { message, userTz, memoryIndex },
         at,
       );

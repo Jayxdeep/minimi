@@ -153,19 +153,21 @@ describe('planner: deterministic sanitisation', () => {
           { query: 'p3', mode: 'quick' },
           { query: 'p4', mode: 'quick' },
           { query: 'p5', mode: 'quick' },
+          { query: 'p6', mode: 'quick' },
         ],
       }),
     ]);
 
     const { plan } = await createPlanner(llm).plan('x', context());
 
-    expect(plan.search_plan).toHaveLength(4);
+    expect(plan.search_plan).toHaveLength(6);
     expect(plan.search_plan[0]).toEqual({
       query: 'Supabase pricing',
       mode: 'quick',
       since: '2026-11-10',
     });
     expect(plan.search_plan[1]).toEqual({ query: 'Neon pricing', mode: 'news' });
+    expect(plan.search_plan.at(-1)?.query).toBe('p6');
   });
 
   it('normalises and caps keywords', async () => {

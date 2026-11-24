@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -7,6 +7,7 @@ import { createApp } from '../src/server';
 import { createDb, type Db } from '../src/db';
 import { createPlanner } from '../src/planner';
 import { chunkReply } from '../src/routes/chat';
+import type { SearchProvider } from '../src/search/types';
 import type { SseEvent } from '../src/types';
 import { FIXED_NOW, FakeLLMClient, plannerJson } from './helpers/fake-llm';
 
@@ -21,6 +22,7 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
+  vi.restoreAllMocks();
 });
 
 function collectSseFrom(target: Express, body: unknown) {
@@ -378,5 +380,132 @@ describe('POST /chat with a planner', () => {
     const prompt = llm.calls[0]?.messages[1]?.content ?? '';
     expect(prompt).toContain('Asia/Kolkata');
     expect(prompt).toContain('NOW_LOCAL:');
+  });
+});
+
+describe('POST /chat with search', () => {
+  function twoQueryPlan(): string {
+    return plannerJson({
+      search_plan: [
+        { query: 'Supabase pricing', mode: 'quick', since: '2026-11-10' },
+        { query: 'Neon pricing', mode: 'news' },
+      ],
+    });
+  }
+
+  function searchApp(
+    provider: SearchProvider | null,
+    plan: string = twoQueryPlan(),
+  ) {
+    const llm = new FakeLLMClient([plan]);
+    return createApp(db, {
+      chunkDelayMs: 0,
+      planner: createPlanner(llm),
+      searchProvider: provider,
+      now: () => FIXED_NOW,
+    });
+  }
+
+  it('emits searching then grouped results between plan and done', async () => {
+    const provider: SearchProvider = {
+      async search(query) {
+        return [
+          {
+            url: `https://example.com/${encodeURIComponent(query)}`,
+            title: `${query} result`,
+            snippet: 'a snippet',
+          },
+        ];
+      },
+    };
+
+    const response = await collectSseFrom(searchApp(provider), {
+      sessionId: 's-search',
+      message: 'has postgres hosting pricing changed?',
+    });
+
+    const events = parseEvents(String(response.body));
+
+    expect(events.map((event) => event.type)).toEqual([
+      'status',
+      'plan',
+      'searching',
+      'search_results',
+      'status',
+      'done',
+    ]);
+
+    const searching = events[2];
+    if (searching?.type !== 'searching') throw new Error('expected searching');
+    expect(searching.queries).toEqual(['Supabase pricing', 'Neon pricing']);
+
+    const results = events[3];
+    if (results?.type !== 'search_results') {
+      throw new Error('expected search_results');
+    }
+    expect(results.data).toHaveLength(2);
+    expect(results.data[0]?.query).toBe('Supabase pricing');
+    expect(results.data[1]?.query).toBe('Neon pricing');
+    expect(results.data[0]?.results[0]?.url).toContain('Supabase');
+  });
+
+  it('skips search when the plan has no queries', async () => {
+    const search = vi.fn(async () => []);
+    const response = await collectSseFrom(
+      searchApp({ search }, plannerJson({ search_plan: [] })),
+      { sessionId: 's-nosearch', message: 'hello there' },
+    );
+
+    const events = parseEvents(String(response.body));
+
+    expect(events.some((event) => event.type === 'searching')).toBe(false);
+    expect(events.some((event) => event.type === 'search_results')).toBe(false);
+    expect(search).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: 'done' });
+  });
+
+  it('skips search when no provider is configured', async () => {
+    const response = await collectSseFrom(searchApp(null), {
+      sessionId: 's-noprovider',
+      message: 'compare hosting',
+    });
+
+    const events = parseEvents(String(response.body));
+
+    expect(events.some((event) => event.type === 'searching')).toBe(false);
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'status' && event.text.includes('search disabled'),
+      ),
+    ).toBe(true);
+    expect(events.at(-1)).toEqual({ type: 'done' });
+  });
+
+  it('still completes when every query fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const provider: SearchProvider = {
+      async search() {
+        throw new Error('upstream down');
+      },
+    };
+
+    const response = await collectSseFrom(searchApp(provider), {
+      sessionId: 's-search-fail',
+      message: 'compare hosting',
+    });
+
+    const events = parseEvents(String(response.body));
+    const results = events.find((event) => event.type === 'search_results');
+
+    if (results?.type !== 'search_results') {
+      throw new Error('expected search_results even on failure');
+    }
+
+    expect(results.data).toHaveLength(2);
+    expect(results.data.every((group) => group.results.length === 0)).toBe(true);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'done' });
   });
 });

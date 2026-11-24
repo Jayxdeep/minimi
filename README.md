@@ -7,10 +7,11 @@ Every turn is stored as an immutable episode. Every answer with verifiable claim
 stored as a timestamped observation. When you come back later and ask *"is that still
 true?"*, the agent can show you what it said, what it saw, and what has moved since.
 
-> **Status: Phase 1 of 5.** The planner is live: it resolves relative dates,
-> drafts search queries, and decides what to re-verify. Search and synthesis land in
-> Phases 2–3, so `/chat` currently streams a plan card and no answer yet. Without a
-> `DEEPSEEK_API_KEY` the server falls back to echo mode. See
+> **Status: Phase 2 of 5.** The planner is live and its search plan now executes
+> for real: up to six Tavily queries fan out in parallel, and the raw results stream into
+> a "Web Results" card. Synthesis into an answer (and snapshotting) lands in Phase 3.
+> Without a `DEEPSEEK_API_KEY` the server falls back to echo mode; without
+> `TAVILY_API_KEY` search returns an explicit stub. See
 > [Phase log](DESIGN.md#phase-log) for exactly what is stubbed.
 
 ---
@@ -26,17 +27,21 @@ npm run dev
 ```
 
 Open <http://localhost:3000>. **No API keys are needed to boot** — without a
-`DEEPSEEK_API_KEY` the server runs in echo mode and says so on startup.
+`DEEPSEEK_API_KEY` the server runs in echo mode; without `TAVILY_API_KEY` the search
+provider returns a clearly labelled stub instead of calling the network.
 
-With a key, every turn runs the planner (one JSON-mode call) and streams the parsed plan:
+With keys, every turn runs the planner, executes its search plan in parallel, and streams
+both to the UI:
 
 ```
 data: {"type":"status","text":"planning…"}
 data: {"type":"plan","plan":{"intent":"change", ...}}
+data: {"type":"searching","queries":["Supabase pricing","Neon pricing"]}
+data: {"type":"search_results","data":[{"query":"...","results":[...]}]}
 data: {"type":"done"}
 ```
 
-`TAVILY_API_KEY` is only needed once Phase 2 lands.
+Synthesis into a written answer arrives in Phase 3.
 
 ## Scripts
 
@@ -57,7 +62,7 @@ Everything the app reads is declared in [`.env.example`](.env.example):
 | `DEEPSEEK_BASE_URL`      | no       | `https://api.deepseek.com` | Swap provider on outage       |
 | `DEEPSEEK_MODEL`         | no       | `deepseek-chat` | Model id                                 |
 | `LLM_TIMEOUT_MS`         | no       | `60000`         | Per-request timeout                      |
-| `TAVILY_API_KEY`         | Phase 2+ | —               | Web search                               |
+| `TAVILY_API_KEY`         | Phase 2+ | —               | Web search; empty = explicit stub        |
 | `PORT`                   | no       | `3000`          | HTTP port                                |
 | `DB_PATH`                | no       | `./data/agent.db` | SQLite file (parent dir auto-created)  |
 | `STREAM_TOKEN_DELAY_MS`  | no       | `30`            | Echo chunk delay; `0` in tests           |
@@ -71,9 +76,9 @@ browser ──POST /chat──▶ express
                           ├─ memory index: recent episodes + snapshot headers (SQL)
                           ├─ planner (one JSON call) → intent, date ranges, keywords,
                           │                             search plan, verify ids
-                          ├─ (Phase 2) exact recall + deterministic search fan-out
+                          ├─ exact recall + deterministic search fan-out (≤ 6, parallel)
                           ├─ (Phase 3) synthesizer → streamed markdown + fenced JSON
-                          └─ emit plan (now) / persist answer + snapshot (Phase 3)
+                          └─ emit plan + raw results (now) / persist answer + snapshot (Phase 3)
 ```
 
 Note the ordering: memory is loaded **before** the planner, so the planner can
@@ -86,6 +91,10 @@ The transport contract is fixed now and will not change:
 data: {"type":"status","text":"planning…"}
 
 data: {"type":"plan","plan":{"intent":"change","now_iso":"…", …}}
+
+data: {"type":"searching","queries":["…"]}
+
+data: {"type":"search_results","data":[{"query":"…","results":[{"url":"…"}]}]}
 
 data: {"type":"token","text":"As of "}
 
@@ -111,6 +120,11 @@ src/
   planner/
     prompt.ts      system prompt + clock/timezone/memory injection
     index.ts       parse → validate (Zod) → sanitize, one bounded retry
+  search/
+    types.ts       SearchProvider seam + result/group shapes
+    tavily.ts      REST client, mode mapping, offline stub
+    exa.ts         second provider stub
+    fanout.ts      parallel execution, 6-query cap, per-query failure isolation
   memory/
     index.ts       deterministic memory index built before planning
   db/
@@ -126,7 +140,7 @@ public/
     sse.js         SSE frame parser (pure, unit-tested)
     ui.js          ChatView, bubbles, plan card (DOM only)
     session.js     session id persistence
-tests/             71 tests, all offline
+tests/             85 tests, all offline
 data/              SQLite lives here (gitignored)
 ```
 
@@ -141,8 +155,9 @@ npm test        # offline: in-memory SQLite, no API keys, no network
 The suite covers migration idempotency, schema shape, time-range boundaries, keyword
 recall, snapshot round-trips, foreign-key enforcement, SSE framing (including byte-split
 frames and multi-byte characters), disconnect safety, exact echo reconstruction,
-memory-index construction, planner parsing/sanitisation, the single schema retry, and
-planner-mode streaming. The LLM is a fake, so `npm test` never touches the network.
+memory-index construction, planner parsing/sanitisation, the single schema retry,
+planner-mode streaming, Tavily request mapping, fan-out caps, and per-query failure
+isolation. The LLM and the network are faked, so `npm test` never leaves the machine.
 
 ## Design
 

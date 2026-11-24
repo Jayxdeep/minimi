@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SearchGroup } from './search/types';
 
 /* -------------------------------------------------------------------------- */
 /* Persistence-shape types                                                     */
@@ -112,12 +113,14 @@ export const ChatRequestSchema = z.object({
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
 /**
- * Every SSE frame is `data: <json>\n\n`. `status` and `plan` are progress
- * signals; only `token` carries answer text.
+ * Every SSE frame is `data: <json>\n\n`. `status`, `plan`, `searching` and
+ * `search_results` are progress signals; only `token` carries answer text.
  */
 export type SseEvent =
   | { type: 'status'; text: string }
   | { type: 'plan'; plan: PlannerOutput }
+  | { type: 'searching'; queries: string[] }
+  | { type: 'search_results'; data: SearchGroup[] }
   | { type: 'token'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done' };
