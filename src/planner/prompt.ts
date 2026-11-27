@@ -13,6 +13,7 @@ Rules:
   * "change" — the user asks whether something is still true, or what has changed since a past answer or date.
   * "lookup" — the user wants current facts that require a web search.
   * "chat" — small talk, or anything that needs neither search nor memory.
+- If the user pastes a large block of text (roughly 500 characters or more) and asks about it (summarise, explain, extract, rewrite), set intent to "chat" and search_plan to []. The answer comes from their text, not the web.
 - memory.window: a UTC [start, end] pair only when the user refers to a past time; otherwise null. This drives exact episode recall.
 - memory.keywords: 2-6 lowercase terms for keyword recall over stored messages. Include product and entity names. These find memories that fall outside the time window.
 - search_plan: 0-6 web queries, phrased the way a person would search. Use mode "news" for releases and announcements, "quick" for pricing and product pages, "deep" only when one answer needs several pages. Omit since unless recency matters; when present it must be YYYY-MM-DD.

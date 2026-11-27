@@ -6,7 +6,9 @@ import {
   SynthesisError,
   type SynthesisContext,
 } from '../src/synth';
+import { SYNTH_SYSTEM_PROMPT } from '../src/synth/prompt';
 import { contentHash, flattenSources } from '../src/synth/sources';
+import type { Recall } from '../src/recall';
 import type { SearchGroup } from '../src/search/types';
 import type { PlannerOutput } from '../src/types';
 import { FIXED_NOW, FakeLLMClient, synthesisText } from './helpers/fake-llm';
@@ -76,11 +78,54 @@ function context(overrides: Partial<SynthesisContext> = {}): SynthesisContext {
     now: FIXED_NOW,
     userTz: 'Europe/London',
     plan: PLAN,
-    memoryIndex: [],
+    recall: { episodes: [], snapshots: [] },
     groups: GROUPS,
     ...overrides,
   };
 }
+
+const RECALL: Recall = {
+  episodes: [
+    {
+      id: 'm-old',
+      sessionId: 's1',
+      role: 'user',
+      content: 'Can you compare Supabase and Neon?',
+      createdAt: '2026-11-03T09:00:00.000Z',
+    },
+  ],
+  snapshots: [
+    {
+      id: 'snap_postgres',
+      messageId: 'm-old',
+      label: 'Postgres hosting pricing',
+      topicKey: 'neon|supabase',
+      entities: ['Supabase', 'Neon'],
+      claims: [
+        {
+          subject: 'Supabase',
+          attribute: 'pricing',
+          value: 'Pro is $25/mo',
+          as_of: '2026-11-02',
+          source_ids: [0],
+          confidence: 0.8,
+        },
+      ],
+      sources: [
+        {
+          url: 'https://supabase.com/pricing',
+          title: 'Pricing',
+          published_date: '2026-11-02',
+          retrieved_at: '2026-11-03T09:00:00.000Z',
+          snippet: 'Pro $25',
+          content_hash: 'sha256:abc',
+        },
+      ],
+      observedAt: '2026-11-03T09:00:00.000Z',
+      supersedesId: null,
+    },
+  ],
+};
 
 function run(client: FakeLLMClient, ctx: SynthesisContext = context()) {
   const tokens: string[] = [];
@@ -175,6 +220,30 @@ describe('flattenSources', () => {
   it('hashes normalised snippet content deterministically', () => {
     expect(contentHash('a   b\nc')).toBe(contentHash('a b c'));
     expect(contentHash('a b c')).toMatch(/^sha256:[0-9a-f]{32}$/);
+  });
+});
+
+describe('SYNTH_SYSTEM_PROMPT', () => {
+  it('demands extraction from tables and version numbers', () => {
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'Carefully read ALL provided search snippets.',
+    );
+    expect(SYNTH_SYSTEM_PROMPT).toContain('markdown tables');
+    expect(SYNTH_SYSTEM_PROMPT).toContain('extract it verbatim');
+  });
+
+  it('forbids web search for pasted text', () => {
+    expect(SYNTH_SYSTEM_PROMPT).toContain('large block of text');
+    expect(SYNTH_SYSTEM_PROMPT).toContain('do NOT search the web');
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'Base your answer entirely on the text they provided.',
+    );
+  });
+
+  it('requires the three verdict labels', () => {
+    expect(SYNTH_SYSTEM_PROMPT).toContain('**Changed**');
+    expect(SYNTH_SYSTEM_PROMPT).toContain('**Unchanged**');
+    expect(SYNTH_SYSTEM_PROMPT).toContain("**Couldn't verify**");
   });
 });
 
@@ -322,14 +391,37 @@ describe('createSynthesizer', () => {
     await expect(run(client)).rejects.toThrow(/empty answer/);
   });
 
-  it('sends the numbered sources and memory to the model', async () => {
+  it('sends the numbered sources and recalled claims to the model', async () => {
     const client = new FakeLLMClient([], [synthesisText('ok [2].', TRAILER)]);
-    await run(client);
+    await run(client, context({ recall: RECALL }));
 
     const user = client.streamCalls[0]?.messages[1]?.content ?? '';
     expect(user).toContain('[1] Supabase Pricing');
     expect(user).toContain('URL: https://neon.com/pricing');
-    expect(user).toContain('MEMORY');
+    expect(user).toContain('RECALLED MEMORY');
+    expect(user).toContain('snap_postgres');
+    expect(user).toContain('$25/mo');
+    expect(user).toContain('https://supabase.com/pricing');
     expect(user).toContain('NOW_UTC: 2026-11-18T12:00:00.000Z');
+  });
+
+  it('says so plainly when nothing was recalled', async () => {
+    const client = new FakeLLMClient([], [synthesisText('ok [1].', TRAILER)]);
+    await run(client);
+
+    const user = client.streamCalls[0]?.messages[1]?.content ?? '';
+    expect(user).toContain('(no stored memories matched this question)');
+  });
+
+  it('allows superseding a recalled snapshot without a verify id', async () => {
+    const trailer = { ...TRAILER, supersedes_id: 'snap_postgres' };
+    const client = new FakeLLMClient(
+      [],
+      [synthesisText('Updated [1].', trailer)],
+    );
+
+    const { result } = await run(client, context({ recall: RECALL }));
+
+    expect(result.snapshot?.supersedesId).toBe('snap_postgres');
   });
 });

@@ -56,10 +56,10 @@ once with the validation error fed back. That is a retry, not a call: worst case
 planner attempts, still one synthesizer. The synthesizer is never retried mid-stream,
 because half an answer cannot be un-said.
 
-**Status.** Both calls are implemented: the planner, then search fan-out, then the
-synthesizer. A completed turn now persists the assistant episode and, when the answer made
-verifiable claims, its snapshot. Exact recall of past episodes and snapshots into the
-synthesizer is Phase 4; today it receives the same compact memory index as the planner.
+**Status.** Both calls and the recall layer are implemented: the planner chooses what to
+look for, `recallMemory` loads exactly that (plus linked snapshots) from SQL, and the
+synthesizer compares stored claims with current sources. A completed turn persists the
+assistant episode and, when the answer made verifiable claims, its snapshot.
 
 ## 3. Episodes and observations are different things
 
@@ -102,6 +102,15 @@ runs inside `raw.transaction(fn).immediate()` (`persistAnswer`), so a turn persi
 neither. Invalid evidence rolls the episode back with it. A transaction never spans an
 `await`.
 
+**Recall.** The synthesizer does not get "recent stuff". After the planner runs,
+`recallMemory` merges four deterministic sources: the resolved `memory.window`, FTS keyword
+hits for episodes plus LIKE hits for snapshot labels/entities, the planner's
+`verify_snapshot_ids`, and snapshots linked to any recalled episode. The current turn is
+excluded by message id, explicit re-verify snapshots survive capping, and the result is
+rendered with claim **values**, `as_of` dates, and source URLs. This is why query 1 works
+even though "on Monday" resolves to a window that does not contain the Thursday shortlist:
+keyword recall bridges the gap, and the model then compares real stored claims.
+
 ### Keyword recall, not embeddings
 
 Time windows alone cannot find "the shortlist we made on Monday" if the memory window is
@@ -131,15 +140,17 @@ This is the part the product lives or dies on.
 A snapshot is evidence, not truth. When the agent re-checks a topic it produces one of
 three verdicts per claim, and it says which one:
 
-| Verdict          | Evidence                                                     | Wording                                   |
-| ---------------- | ------------------------------------------------------------ | ----------------------------------------- |
-| **Changed**      | new source contradicts the stored claim, or a newer source is dated after `observed_at` with a different value | "As of <date>, X was $Y. It is now $Z." |
-| **No change seen** | search found nothing newer than `observed_at`              | "I found no evidence of a change since <date>. My last observation was <date>." |
-| **Cannot tell**  | sources are undated, paywalled, or contradictory             | "I can't verify this: the current pricing page has no date I can trust." |
+| Verdict              | Evidence                                                     | Wording                                   |
+| -------------------- | ------------------------------------------------------------ | ----------------------------------------- |
+| **Changed**          | new source contradicts the stored claim, or a newer source is dated after `observed_at` with a different value | "As of <date>, X was $Y. It is now $Z." |
+| **Unchanged**        | no newer source contradicts the stored observation, and the stored observation is known | "No change observed since <date>. Last observed X at $Y." |
+| **Couldn't verify**  | memory is missing, or sources are absent, undated, paywalled, or contradictory | "I can't verify this: I have no stored claim / no dated source I can trust." |
 
 The rule is simple and non-negotiable: **absence of evidence of change is not evidence of
-no change**, and the answer always states its observation window. A judge who asks "how do
-you know nothing changed?" should get that sentence, not a confident guess.
+no change**. `Unchanged` is the label for "no contradicting evidence, with a known
+observation window" — it is never an absolute claim, and the answer always states its
+observation window. A judge who asks "how do you know nothing changed?" should get that
+sentence, not a confident guess.
 
 Sources carry `published_date` (nullable, often absent), `retrieved_at`, the `snippet` we
 actually read, and a normalised `content_hash`. The hash is what makes a future
@@ -251,6 +262,15 @@ Implementation details that matter:
 - No trailer, invalid JSON, or an empty answer → `error` event, and nothing is persisted —
   not even the assistant episode. An answer with no citable claims (chat, or an honest
   "I can't verify") persists the episode, with no snapshot.
+
+The answer uses exactly those three verdict labels when the question is temporal. Two more
+prompt rules came from live failures:
+
+- Read every snippet, especially markdown tables and version numbers; if a source contains
+  the exact answer, extract it verbatim even if it falls outside the requested time window.
+- When the user pastes a large block of text and asks about it, answer from that text and do
+  not search. The planner also clamps this in code (`>= 500` characters → `chat`, empty
+  `search_plan`), because prompt compliance is not guaranteed.
 
 ## 7. Search
 
@@ -367,15 +387,14 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 3): 120 tests covering migrations, schema shape, time-range
-boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing on both
-sides (including split frames), exact echo reconstruction, session reuse, disconnect
-safety, memory-index construction, planner parsing (fences, prose, bad JSON),
-sanitisation, the single retry, prompt injection, Tavily request mapping (mode, `since`,
-auth header), fan-out caps, per-query failure isolation, URL dedupe, fence splitting
-(including a SQL block that must not be mistaken for the trailer), trailer parsing,
-citation-index remapping, markdown tokenizing/block parsing, safe URL handling, and atomic
-episode + snapshot writes (including rollback). The LLM and the search provider are fakes;
+Current suite (Phase 4): 142 tests. Beyond the earlier coverage, recall is tested across
+all four sources (window, FTS keywords, explicit re-verify ids, episode-linked snapshots),
+including exclusion of the current turn and priority-preserving caps. The eval harness
+(`tests/eval.test.ts`) seeds the Nov 19 CRM shortlist and the Nov 3 Postgres comparison,
+runs all three canonical queries against scripted model output, and asserts: the synthesizer
+prompt contains the old claim values, answers carry the three verdict labels, the new
+snapshot supersedes the seeded one, pasted text produces no search, and an empty memory
+yields "no record" with no stored evidence. The LLM and the search provider are fakes;
 `npm test` never touches the network.
 
 ## 12. Security and limits
@@ -413,5 +432,5 @@ episode + snapshot writes (including rollback). The LLM and the search provider 
 | 1     | Planner + `LLMClient`/`DeepSeekClient`, memory index before planning, Zod validation + one retry, deterministic sanitisation, plan SSE frame | Search; synthesis |
 | 2     | Tavily provider (mode/`since` mapping, offline stub), parallel fan-out (≤ 6, failure-isolated), `searching`/`search_results` SSE, Web Results card | Synthesis; recall merge moves to Phase 4 |
 | 3     | Synthesizer streaming, fence splitter, index-based citations, duplicate-URL collapse, snapshot + episode in one `raw.transaction(fn).immediate()` | Cross-turn recall/verification wiring |
-| 4     | Recall + verification wiring; all three canonical queries end-to-end     | Eval harness                            |
+| 4     | Deterministic recall (window + keywords + re-verify + episode links), full claims into the synthesizer, Changed/Unchanged/Couldn't verify verdicts, pasted-text clamp, `tests/eval.test.ts` for the canonical queries + missing memory | Live eval runner, design polish |
 | 5     | Offline fixture evals, live eval runner, design polish                  | —                                       |

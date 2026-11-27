@@ -3,7 +3,9 @@ import {
   createPlanner,
   degradedPlan,
   extractJsonObject,
+  isLargePastedText,
   MAX_PLANNER_ATTEMPTS,
+  PASTED_TEXT_MIN_CHARS,
   PlannerError,
   type PlannerContext,
 } from '../src/planner';
@@ -238,6 +240,56 @@ describe('planner: prompt', () => {
     const llm = new FakeLLMClient([plannerJson()]);
     await createPlanner(llm).plan('x', context());
     expect(llm.calls[0]?.temperature).toBe(0);
+  });
+});
+
+describe('planner: pasted text', () => {
+  const longMessage = `Here is the document:\n\n${'word '.repeat(120)}\n\nSummarize this.`;
+
+  it('detects a large pasted block', () => {
+    expect(isLargePastedText(longMessage)).toBe(true);
+    expect(longMessage.length).toBeGreaterThanOrEqual(PASTED_TEXT_MIN_CHARS);
+    expect(isLargePastedText('short question')).toBe(false);
+  });
+
+  it('forces chat with no search, even if the model planned searches', async () => {
+    const llm = new FakeLLMClient([
+      plannerJson({
+        intent: 'lookup',
+        search_plan: [{ query: 'document summary tool', mode: 'quick' }],
+      }),
+    ]);
+
+    const { plan } = await createPlanner(llm).plan(longMessage, context());
+
+    expect(plan.intent).toBe('chat');
+    expect(plan.search_plan).toEqual([]);
+  });
+
+  it('leaves a short lookup untouched', async () => {
+    const llm = new FakeLLMClient([
+      plannerJson({
+        intent: 'lookup',
+        search_plan: [{ query: 'Supabase pricing', mode: 'quick' }],
+      }),
+    ]);
+
+    const { plan } = await createPlanner(llm).plan(
+      'what does Supabase cost?',
+      context(),
+    );
+
+    expect(plan.intent).toBe('lookup');
+    expect(plan.search_plan).toHaveLength(1);
+  });
+
+  it('states the no-search rule in the system prompt', async () => {
+    const llm = new FakeLLMClient([plannerJson()]);
+    await createPlanner(llm).plan('x', context());
+
+    const system = llm.calls[0]?.messages[0]?.content ?? '';
+    expect(system).toContain('large block of text');
+    expect(system).toContain('search_plan to []');
   });
 });
 

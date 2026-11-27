@@ -189,6 +189,8 @@ export interface Db {
   listSnapshotsByTopic(topicKey: string): Snapshot[];
   findSnapshotsByTimeRange(start: string, end: string): Snapshot[];
   listRecentSnapshots(sinceIso: string, limit: number): Snapshot[];
+  listSnapshotsByMessageIds(messageIds: readonly string[]): Snapshot[];
+  searchSnapshots(keywords: readonly string[], limit?: number): Snapshot[];
 
   countMessages(sessionId?: string): number;
   ping(): boolean;
@@ -450,6 +452,56 @@ export function createDb(dbPath: string): Db {
            LIMIT ?`,
         )
         .all(sinceIso, limit)
+        .reverse()
+        .map(mapSnapshot);
+    },
+
+    listSnapshotsByMessageIds(messageIds) {
+      const ids = messageIds.slice(0, 500);
+      if (ids.length === 0) return [];
+
+      const placeholders = ids.map(() => '?').join(',');
+      return raw
+        .prepare<unknown[], SnapshotRow>(
+          `SELECT ${SNAPSHOT_COLUMNS} FROM snapshots
+           WHERE message_id IN (${placeholders})
+           ORDER BY observed_at ASC, rowid ASC`,
+        )
+        .all(...ids)
+        .map(mapSnapshot);
+    },
+
+    searchSnapshots(keywords, limit = 8) {
+      const terms = keywords
+        .map((keyword) =>
+          keyword
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim(),
+        )
+        .filter((term) => term.length > 1)
+        .slice(0, 8);
+
+      if (terms.length === 0) return [];
+
+      const clause =
+        '(lower(label) LIKE ? OR topic_key LIKE ? OR lower(entities_json) LIKE ?)';
+      const params: unknown[] = [];
+
+      for (const term of terms) {
+        const pattern = `%${term}%`;
+        params.push(pattern, pattern, pattern);
+      }
+      params.push(limit);
+
+      return raw
+        .prepare<unknown[], SnapshotRow>(
+          `SELECT ${SNAPSHOT_COLUMNS} FROM snapshots
+           WHERE ${terms.map(() => clause).join(' OR ')}
+           ORDER BY observed_at DESC, rowid DESC
+           LIMIT ?`,
+        )
+        .all(...params)
         .reverse()
         .map(mapSnapshot);
     },

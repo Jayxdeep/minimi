@@ -44,6 +44,16 @@ const MAX_KEYWORDS = 8;
 const MAX_KEYWORD_CHARS = 40;
 const MAX_QUERY_CHARS = 200;
 
+/**
+ * A pasted block this large is context to reason over, not a search query.
+ * Prompt guidance alone is not enough, so the planner clamps it in code.
+ */
+export const PASTED_TEXT_MIN_CHARS = 500;
+
+export function isLargePastedText(message: string): boolean {
+  return message.trim().length >= PASTED_TEXT_MIN_CHARS;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Parsing                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -220,7 +230,17 @@ export function createPlanner(
         const parsed = parsePlannerOutput(response.text);
 
         if (parsed.ok) {
-          return { plan: finalizePlan(parsed.value, context), attempts: attempt };
+          const plan = finalizePlan(parsed.value, context);
+
+          // Deterministic guardrail: a pasted document is answered from itself.
+          if (isLargePastedText(message)) {
+            return {
+              plan: { ...plan, intent: 'chat', search_plan: [] },
+              attempts: attempt,
+            };
+          }
+
+          return { plan, attempts: attempt };
         }
 
         lastIssues = parsed.issues;

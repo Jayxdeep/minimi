@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Db } from '../db';
 import { buildMemoryIndex } from '../memory';
 import { degradedPlan, PlannerError, type Planner } from '../planner';
+import { recallMemory, recallSnapshotIds } from '../recall';
 import { executeSearchPlan, dedupeSearchGroups } from '../search/fanout';
 import type { SearchGroup, SearchProvider } from '../search/types';
 import { openSse, type SseStream } from '../sse';
@@ -103,6 +104,7 @@ async function planTurn(
     sessionId: string;
     message: string;
     userTz: string;
+    userMessageId: string;
     memoryIndex: ReturnType<typeof buildMemoryIndex>;
   },
   now: Date,
@@ -142,6 +144,11 @@ async function planTurn(
   }
 
   stream.send({ type: 'plan', plan });
+
+  // Deterministic recall: the planner chose what to look for; this loads it.
+  const recall = recallMemory(db, plan, {
+    excludeMessageId: input.userMessageId,
+  });
 
   const queries = plan.search_plan;
   const willSearch = searchProvider !== null && queries.length > 0;
@@ -189,8 +196,12 @@ async function planTurn(
         now,
         userTz: input.userTz,
         plan,
-        memoryIndex: input.memoryIndex,
+        recall,
         groups,
+        allowedSnapshotIds: new Set([
+          ...recallSnapshotIds(recall),
+          ...plan.verify_snapshot_ids,
+        ]),
         signal: stream.signal,
       },
       (text) => stream.send({ type: 'token', text }),
@@ -273,14 +284,17 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
     // user message so the planner is not shown its own question twice.
     const memoryIndex = planner ? buildMemoryIndex(deps.db, at) : [];
 
+    let userMessageId = '';
+
     try {
       deps.db.upsertSession(sessionId, userTz, at.toISOString());
-      deps.db.insertMessage({
+      const userMessage = deps.db.insertMessage({
         sessionId,
         role: 'user',
         content: message,
         createdAt: at.toISOString(),
       });
+      userMessageId = userMessage.id;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error('[chat] failed to record user turn:', detail);
@@ -307,7 +321,7 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
         planner,
         searchProvider,
         synthesizer,
-        { sessionId, message, userTz, memoryIndex },
+        { sessionId, message, userTz, userMessageId, memoryIndex },
         at,
       );
     } catch (error) {

@@ -1,5 +1,5 @@
 import type { LLMClient } from '../llm/types';
-import { memorySnapshotIds, type MemoryEntry } from '../memory';
+import type { Recall } from '../recall';
 import type { SearchGroup } from '../search/types';
 import type { PlannerOutput } from '../types';
 import { AnswerSplitter } from './fence';
@@ -34,8 +34,10 @@ export interface SynthesisContext {
   now: Date;
   userTz: string;
   plan: PlannerOutput;
-  memoryIndex: readonly MemoryEntry[];
+  recall: Recall;
   groups: readonly SearchGroup[];
+  /** Snapshot ids the model is allowed to supersede. Defaults to recalled ids. */
+  allowedSnapshotIds?: ReadonlySet<string>;
   signal?: AbortSignal;
 }
 
@@ -83,7 +85,7 @@ export function createSynthesizer(client: LLMClient): Synthesizer {
         now: context.now,
         userTz: context.userTz,
         plan: context.plan,
-        memoryIndex: context.memoryIndex,
+        recall: context.recall,
         flat,
       });
 
@@ -112,10 +114,12 @@ export function createSynthesizer(client: LLMClient): Synthesizer {
       const trailer = parseTrailer(trailerText);
       const { claims, sources } = buildEvidence(trailer, flat, context.now);
 
-      const allowedSnapshots = new Set<string>([
-        ...memorySnapshotIds(context.memoryIndex),
-        ...context.plan.verify_snapshot_ids,
-      ]);
+      const allowedSnapshots =
+        context.allowedSnapshotIds ??
+        new Set<string>([
+          ...context.recall.snapshots.map((snapshot) => snapshot.id),
+          ...context.plan.verify_snapshot_ids,
+        ]);
 
       const supersedesId =
         trailer.supersedes_id !== null && allowedSnapshots.has(trailer.supersedes_id)

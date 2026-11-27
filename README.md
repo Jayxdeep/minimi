@@ -7,10 +7,11 @@ Every turn is stored as an immutable episode. Every answer with verifiable claim
 stored as a timestamped observation. When you come back later and ask *"is that still
 true?"*, the agent can show you what it said, what it saw, and what has moved since.
 
-> **Status: Phase 3 of 5.** The full turn is live: planner → parallel Tavily search →
-> streamed answer → atomic snapshot. Answers cite numbered sources, and a verifiable
-> answer stores its claims and sources with an observation timestamp. Cross-turn recall
-> into the synthesizer (the three canonical queries) is Phase 4. Without a
+> **Status: Phase 4 of 5.** Recall, change detection and the eval harness are in place:
+> the planner's window, keyword hits, re-verify ids and linked snapshots are loaded
+> deterministically and given to the synthesizer with full claim values and sources.
+> Change answers use **Changed / Unchanged / Couldn't verify**, and an empty memory
+> produces "no record", not a guess. Phase 5 is eval polish and docs. Without a
 > `DEEPSEEK_API_KEY` the server falls back to echo mode; without `TAVILY_API_KEY` search
 > returns an explicit stub. See [Phase log](DESIGN.md#phase-log).
 
@@ -89,6 +90,10 @@ Note the ordering: memory is loaded **before** the planner, so the planner can
 reference a snapshot it has actually seen. That is what makes *"is your answer still
 correct today?"* answerable without a third model call.
 
+Recall then merges four deterministic sources: the resolved window, FTS keyword hits,
+explicit re-verify ids, and snapshots linked to recalled episodes. The synthesizer gets
+full claim values and source URLs, not just headers.
+
 The transport contract is fixed now and will not change:
 
 ```text
@@ -125,10 +130,12 @@ src/
     prompt.ts      system prompt + clock/timezone/memory injection
     index.ts       parse → validate (Zod) → sanitize, one bounded retry
   synth/
-    prompt.ts      answer prompt + numbered sources + trailer contract
+    prompt.ts      answer prompt + numbered sources + verdict + trailer contract
     fence.ts       streaming splitter (answer now, JSON trailer withheld)
     sources.ts     citation indexes → real URLs, evidence remapping
     index.ts       stream, parse trailer, build claims/sources
+  recall/
+    index.ts       window + keyword + re-verify + linked-snapshot recall
   search/
     types.ts       SearchProvider seam + result/group shapes
     tavily.ts      REST client, mode mapping, offline stub
@@ -151,7 +158,7 @@ public/
     markdown.js    small safe renderer (parsers unit-tested)
     url.js         http(s)-only URL helpers
     session.js     session id persistence
-tests/             120 tests, all offline
+tests/             142 tests, all offline
 data/              SQLite lives here (gitignored)
 ```
 
@@ -168,8 +175,11 @@ recall, snapshot round-trips, foreign-key enforcement, SSE framing (including by
 frames and multi-byte characters), disconnect safety, exact echo reconstruction,
 memory-index construction, planner parsing/sanitisation, the single schema retry, Tavily
 request mapping, fan-out caps, failure isolation, URL dedupe, fence splitting, trailer
-parsing, citation remapping, and atomic episode + snapshot writes including rollback. The
-LLM and the network are faked, so `npm test` never leaves the machine.
+parsing, citation remapping, atomic episode + snapshot writes including rollback,
+deterministic recall (window, keywords, re-verify, episode links, capping), and the eval
+harness: the three canonical queries run end-to-end against seeded snapshots, plus the
+pasted-text and missing-memory cases. The LLM and the network are faked, so `npm test`
+never leaves the machine.
 
 ## Design
 
