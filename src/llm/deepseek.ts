@@ -5,6 +5,7 @@ import {
   type JsonResponse,
   type LLMClient,
   type LlmUsage,
+  type TextRequest,
 } from './types';
 
 export interface DeepSeekClientOptions {
@@ -80,6 +81,34 @@ export class DeepSeekClient implements LLMClient {
       if (error instanceof LlmError) throw error;
       const detail = error instanceof Error ? error.message : String(error);
       throw new LlmError(`DeepSeek request failed: ${detail}`, error);
+    }
+  }
+
+  /**
+   * Streaming completion. No response_format here: the synthesizer writes
+   * markdown and ends with a fenced JSON block, which the caller splits.
+   */
+  async *streamText(request: TextRequest): AsyncGenerator<string> {
+    try {
+      const stream = await this.client.chat.completions.create(
+        {
+          model: this.model,
+          messages: request.messages,
+          temperature: request.temperature ?? 0.3,
+          max_tokens: request.maxTokens ?? 2_500,
+          stream: true,
+        },
+        request.signal ? { signal: request.signal } : {},
+      );
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) yield delta;
+      }
+    } catch (error) {
+      if (error instanceof LlmError) throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new LlmError(`DeepSeek stream failed: ${detail}`, error);
     }
   }
 }

@@ -30,10 +30,19 @@ export interface JsonResponse {
   usage?: LlmUsage;
 }
 
+export interface TextRequest {
+  messages: LlmMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
 export interface LLMClient {
   readonly model: string;
   /** Return raw text that is expected (but not guaranteed) to contain JSON. */
   json(request: JsonRequest): Promise<JsonResponse>;
+  /** Stream answer text deltas. Used by the synthesizer. */
+  streamText(request: TextRequest): AsyncIterable<string>;
 }
 
 export class LlmError extends Error {

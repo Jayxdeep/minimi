@@ -56,10 +56,10 @@ once with the validation error fed back. That is a retry, not a call: worst case
 planner attempts, still one synthesizer. The synthesizer is never retried mid-stream,
 because half an answer cannot be un-said.
 
-**Status.** Call 1 (the planner), the memory index and the search fan-out are implemented.
-A planner-mode turn therefore persists only the user episode: there is no synthesized
-answer yet, and storing a fake one would poison later recall. Phase 3 replaces the tail of
-the turn; the pipeline around it does not change.
+**Status.** Both calls are implemented: the planner, then search fan-out, then the
+synthesizer. A completed turn now persists the assistant episode and, when the answer made
+verifiable claims, its snapshot. Exact recall of past episodes and snapshots into the
+synthesizer is Phase 4; today it receives the same compact memory index as the planner.
 
 ## 3. Episodes and observations are different things
 
@@ -94,12 +94,13 @@ Three consequences worth defending:
   the entity set is stable, so the chain of observations is findable in one indexed query.
   `supersedes_id` links an observation to the one it re-checks.
 
-**Atomicity.** `insertSnapshot` is deliberately not wrapped in an explicit transaction: it
-is one `INSERT` (SQLite autocommit, atomic and durable on return) followed by a synchronous
-read-back, with no `await` between them, so no other turn in the process can interleave.
-Phase 3 introduces the first genuinely multi-statement write — the assistant episode and its
-snapshot must agree — and that pair will run inside `raw.transaction(fn).immediate()`, so a
-turn persists both or neither. A transaction never spans an `await`.
+**Atomicity.** `insertSnapshot` is deliberately not wrapped on its own: it is one `INSERT`
+(SQLite autocommit, atomic and durable on return) followed by a synchronous read-back, with
+no `await` between them, so no other turn in the process can interleave. The first genuinely
+multi-statement write is the assistant episode plus its snapshot, which must agree; that pair
+runs inside `raw.transaction(fn).immediate()` (`persistAnswer`), so a turn persists both or
+neither. Invalid evidence rolls the episode back with it. A transaction never spans an
+`await`.
 
 ### Keyword recall, not embeddings
 
@@ -209,12 +210,10 @@ actually exhibits.
 ## 6. Synthesizer contract
 
 One streaming call. Markdown streams to the user immediately; a single fenced JSON block at
-the end carries structured claims and sources:
+the end carries structured claims and **citation indexes**, never URLs:
 
 ````text
 As of 11 Nov I told you Supabase's Pro plan was $25/mo [1]. Since then...
-
-[1] https://supabase.com/pricing
 
 ```json
 {
@@ -222,26 +221,36 @@ As of 11 Nov I told you Supabase's Pro plan was $25/mo [1]. Since then...
   "entities": ["Supabase", "Neon"],
   "claims": [
     { "subject": "Supabase", "attribute": "pricing", "value": "Pro $25/mo",
-      "as_of": "2025-11-11", "source_ids": [0], "confidence": 0.8 }
+      "as_of": "2025-11-11", "source_ids": [1], "confidence": 0.8 }
   ],
-  "sources": [
-    { "url": "https://supabase.com/pricing", "title": "Pricing",
-      "published_date": null, "retrieved_at": "2026-11-19T10:00:02.000Z",
-      "snippet": "Pro $25 / month", "content_hash": "..." }
-  ],
+  "used_sources": [1],
   "supersedes_id": "snap_01..."
 }
 ````
+
+Why indexes instead of URLs: a model can hallucinate a URL, but it cannot hallucinate a
+search result that exists. Code flattens the grouped results into a numbered `SOURCES` block
+in exactly the order the UI renders them, so `[3]` on screen is source 3 in the trailer.
+Indexes are mapped back to real `{url, title, snippet, published_date}` rows. Unknown indexes
+drop the claim; a claim with no surviving source is not stored at all. That is citation
+validation by construction, not a post-hoc string match.
 
 Implementation details that matter:
 
 - The streamer holds back only the longest possible fence prefix, so no ```` ``` ```` leaks
   into the answer; the JSON block is parsed on completion, never incrementally.
-- The fence is parsed as the **last** JSON block, tolerating trailing prose.
-- Every cited URL is checked against the actual search results for that turn. Unknown URLs
-  are dropped and the claim is marked unverified. This is a deterministic anti-hallucination
-  check, not a third model call.
-- No fenced block, or invalid JSON → `error` event, and **no snapshot** is written.
+- A ```` ```sql ```` block in the answer streams normally. Only a line-start
+  ```` ```json ```` is treated as the trailer.
+- The trailer is parsed as the last JSON block, tolerating a missing closing fence and
+  trailing prose.
+- Stored claim `source_ids` are **0-based positions in the snapshot's own `sources` array**,
+  not prompt indexes. The source list is compacted to the ones actually used, and both are
+  remapped together.
+- Duplicate URLs are removed across queries before streaming and synthesis, so a page that
+  appears under four queries gets one citation index and one stored row.
+- No trailer, invalid JSON, or an empty answer → `error` event, and nothing is persisted —
+  not even the assistant episode. An answer with no citable claims (chat, or an honest
+  "I can't verify") persists the episode, with no snapshot.
 
 ## 7. Search
 
@@ -310,6 +319,11 @@ and mid-UTF-8. Handler exceptions are deliberately outside the JSON `try/catch`,
 terminal `{type:"error"}` actually stops the stream instead of being swallowed by the
 parser.
 
+Answers stream as plain text for speed, then `ui.js` re-renders the accumulated markdown on
+`done`. The renderer (`markdown.js`) never touches `innerHTML`: it builds nodes from a small
+pure parser and restricts links to `http(s)`, so a hostile source cannot inject markup or a
+`javascript:` URL. Its tokenizer and block parser are unit-tested in Node.
+
 ## 9. Failure ladder
 
 | Failure                        | Behaviour                                                        |
@@ -353,13 +367,16 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 2): 85 tests covering migrations, schema shape, time-range
+Current suite (Phase 3): 120 tests covering migrations, schema shape, time-range
 boundaries, FTS recall, snapshot round-trip and chaining, foreign keys, SSE framing on both
 sides (including split frames), exact echo reconstruction, session reuse, disconnect
 safety, memory-index construction, planner parsing (fences, prose, bad JSON),
-sanitisation, the single retry, prompt injection, planner-mode streaming, Tavily request
-mapping (mode, `since`, auth header), fan-out caps, and per-query failure isolation. The
-LLM and the search provider are fakes; `npm test` never touches the network.
+sanitisation, the single retry, prompt injection, Tavily request mapping (mode, `since`,
+auth header), fan-out caps, per-query failure isolation, URL dedupe, fence splitting
+(including a SQL block that must not be mistaken for the trailer), trailer parsing,
+citation-index remapping, markdown tokenizing/block parsing, safe URL handling, and atomic
+episode + snapshot writes (including rollback). The LLM and the search provider are fakes;
+`npm test` never touches the network.
 
 ## 12. Security and limits
 
@@ -395,6 +412,6 @@ LLM and the search provider are fakes; `npm test` never touches the network.
 | 0.5   | README, this document, phase log                                        | —                                       |
 | 1     | Planner + `LLMClient`/`DeepSeekClient`, memory index before planning, Zod validation + one retry, deterministic sanitisation, plan SSE frame | Search; synthesis |
 | 2     | Tavily provider (mode/`since` mapping, offline stub), parallel fan-out (≤ 6, failure-isolated), `searching`/`search_results` SSE, Web Results card | Synthesis; recall merge moves to Phase 4 |
-| 3     | Synthesizer streaming, fence parser, citation checks, snapshots; assistant episode + snapshot written in one `raw.transaction(fn).immediate()` | Cross-turn change wiring |
+| 3     | Synthesizer streaming, fence splitter, index-based citations, duplicate-URL collapse, snapshot + episode in one `raw.transaction(fn).immediate()` | Cross-turn recall/verification wiring |
 | 4     | Recall + verification wiring; all three canonical queries end-to-end     | Eval harness                            |
 | 5     | Offline fixture evals, live eval runner, design polish                  | —                                       |

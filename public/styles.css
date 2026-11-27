@@ -456,6 +456,87 @@ code, kbd, pre {
   white-space: pre-wrap;
 }
 
+/* Rendered markdown blocks must not inherit the streaming pre-wrap. */
+.msg-row.assistant .body > p,
+.msg-row.assistant .body > ul,
+.msg-row.assistant .body > ol,
+.msg-row.assistant .body > h3,
+.msg-row.assistant .body > h4,
+.msg-row.assistant .body > h5 {
+  white-space: normal;
+}
+
+.msg-row.assistant .body p {
+  margin: 0 0 10px;
+}
+
+.msg-row.assistant .body p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-row.assistant .body ul,
+.msg-row.assistant .body ol {
+  margin: 8px 0 12px;
+  padding-left: 22px;
+}
+
+.msg-row.assistant .body li {
+  margin: 3px 0;
+}
+
+.msg-row.assistant .body li::marker {
+  color: var(--text-faint);
+}
+
+.msg-row.assistant .body strong {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.msg-row.assistant .body em {
+  color: var(--text-secondary);
+}
+
+.msg-row.assistant .body code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.msg-row.assistant .body a {
+  color: var(--accent-base);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.msg-row.assistant .body a:hover {
+  color: var(--accent-tint);
+}
+
+.msg-row.assistant .body h3,
+.msg-row.assistant .body h4,
+.msg-row.assistant .body h5 {
+  margin: 14px 0 6px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.msg-row.assistant .body h3 {
+  font-size: 17px;
+}
+
+.msg-row.assistant .body h4 {
+  font-size: 15.5px;
+}
+
+.msg-row.assistant .body h5 {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
 /* Error state */
 .bubble.error {
   border: 1px solid var(--danger-border);
@@ -843,6 +924,20 @@ code, kbd, pre {
   background: var(--bg-surface-elevated);
   border-radius: var(--radius-sm);
   padding: 9px 11px;
+}
+
+.result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.result-index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent-base);
+  opacity: 0.85;
 }
 
 .result-title {

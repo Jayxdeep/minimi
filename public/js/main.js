@@ -86,7 +86,7 @@ async function runTurn(text) {
           throw new Error(event.message);
 
         case 'done':
-          target.finish();
+          target.complete();
           break;
 
         default:

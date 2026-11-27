@@ -3,6 +3,9 @@
  * logic: given an event, update a bubble.
  */
 
+import { renderMarkdown } from './markdown.js';
+import { prettyUrl, safeUrl } from './url.js';
+
 /**
  * @param {string} tag
  * @param {string} className
@@ -129,26 +132,6 @@ export function renderPlan(bubble, plan) {
   bubble.append(details);
 }
 
-function safeUrl(raw) {
-  try {
-    const url = new URL(String(raw));
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-function prettyUrl(href) {
-  try {
-    const url = new URL(href);
-    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/$/, '');
-    return url.hostname.replace(/^www\./, '') + path;
-  } catch {
-    return href;
-  }
-}
-
 /** Render grouped search results as a collapsible "Web Results" card. */
 export function renderSearchResults(bubble, groups) {
   const total = groups.reduce((count, group) => count + group.results.length, 0);
@@ -171,6 +154,7 @@ export function renderSearchResults(bubble, groups) {
   summary.append(left);
 
   const content = element('div', 'results-content');
+  let sourceIndex = 0;
 
   if (groups.length === 0) {
     content.append(element('p', 'results-empty', 'No queries were run.'));
@@ -194,16 +178,25 @@ export function renderSearchResults(bubble, groups) {
         const item = element('li', 'result-item');
         const href = safeUrl(result.url);
         const label = result.title || href || 'Untitled result';
+        sourceIndex += 1;
+
+        const head = element('div', 'result-head');
+        head.append(element('span', 'result-index', `[${sourceIndex}]`));
 
         if (href) {
           const link = element('a', 'result-title', label);
           link.href = href;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
-          item.append(link);
-          item.append(element('div', 'result-url', prettyUrl(href)));
+          head.append(link);
         } else {
-          item.append(element('span', 'result-title', label));
+          head.append(element('span', 'result-title', label));
+        }
+
+        item.append(head);
+
+        if (href) {
+          item.append(element('div', 'result-url', prettyUrl(href)));
         }
 
         if (result.snippet) {
@@ -238,6 +231,7 @@ export class MessageView {
     this.statusEl = null;
     this.cursor = null;
     this.received = false;
+    this.text = '';
   }
 
   setStatus(text) {
@@ -280,7 +274,19 @@ export class MessageView {
       this.body.append(this.cursor);
     }
 
+    this.text += text;
     this.body.insertBefore(document.createTextNode(text), this.cursor);
+  }
+
+  /**
+   * Stream plain text for speed, then render markdown once at the end. The
+   * answer is untrusted, so the renderer builds nodes; no innerHTML anywhere.
+   */
+  complete() {
+    this.finish();
+    if (this.received && this.text.trim().length > 0) {
+      this.body.replaceChildren(renderMarkdown(this.text));
+    }
   }
 
   finish() {

@@ -4,6 +4,25 @@ import type { SearchGroup, SearchPlan, SearchProvider } from './types';
 export const MAX_FANOUT = 6;
 
 /**
+ * Collapse duplicate URLs across queries before the results are streamed or
+ * synthesized. Query plans overlap ("Supabase pricing" / "Supabase plans"), and
+ * without this a single page would get four citation indexes and be stored four
+ * times in a snapshot. First occurrence wins, so numbering stays stable.
+ */
+export function dedupeSearchGroups(groups: readonly SearchGroup[]): SearchGroup[] {
+  const seen = new Set<string>();
+
+  return groups.map((group) => ({
+    query: group.query,
+    results: group.results.filter((result) => {
+      if (seen.has(result.url)) return false;
+      seen.add(result.url);
+      return true;
+    }),
+  }));
+}
+
+/**
  * Execute every planned query concurrently.
  *
  * One bad query must not cost the turn: failures become an empty group, are

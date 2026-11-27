@@ -2,9 +2,10 @@ import { Router } from 'express';
 import type { Db } from '../db';
 import { buildMemoryIndex } from '../memory';
 import { degradedPlan, PlannerError, type Planner } from '../planner';
-import { executeSearchPlan } from '../search/fanout';
-import type { SearchProvider } from '../search/types';
+import { executeSearchPlan, dedupeSearchGroups } from '../search/fanout';
+import type { SearchGroup, SearchProvider } from '../search/types';
 import { openSse, type SseStream } from '../sse';
+import type { SynthesisResult, Synthesizer } from '../synth';
 import { safeTimezone } from '../time';
 import { ChatRequestSchema, type PlannerOutput } from '../types';
 
@@ -16,6 +17,8 @@ export interface ChatRouterDeps {
   planner?: Planner | null;
   /** Null/absent means "no search configured": plan-only turns. */
   searchProvider?: SearchProvider | null;
+  /** Null/absent means "no answer layer": plan + raw results only. */
+  synthesizer?: Synthesizer | null;
   /** Injectable clock, for deterministic tests. */
   now?: () => Date;
 }
@@ -84,17 +87,20 @@ async function echoTurn(
 }
 
 /**
- * Phase 1 planner-only path.
+ * Plan → search → synthesize.
  *
- * No assistant message is persisted yet: there is no synthesized answer to
- * remember, and inventing one would poison later recall. Phase 3 replaces the
- * tail of this function with the synthesizer.
+ * The planner is call 1 and the synthesizer is call 2; everything between them
+ * is deterministic code. A turn is stored only after the trailer validates, and
+ * the assistant episode plus its snapshot commit in one IMMEDIATE transaction.
  */
 async function planTurn(
+  db: Db,
   stream: SseStream,
   planner: Planner,
   searchProvider: SearchProvider | null,
+  synthesizer: Synthesizer | null,
   input: {
+    sessionId: string;
     message: string;
     userTz: string;
     memoryIndex: ReturnType<typeof buildMemoryIndex>;
@@ -139,6 +145,7 @@ async function planTurn(
 
   const queries = plan.search_plan;
   const willSearch = searchProvider !== null && queries.length > 0;
+  let groups: SearchGroup[] = [];
 
   if (willSearch && searchProvider) {
     stream.send({
@@ -147,9 +154,9 @@ async function planTurn(
     });
 
     try {
-      const grouped = await executeSearchPlan(queries, searchProvider);
+      groups = dedupeSearchGroups(await executeSearchPlan(queries, searchProvider));
       if (stream.closed) return;
-      stream.send({ type: 'search_results', data: grouped });
+      stream.send({ type: 'search_results', data: groups });
     } catch (error) {
       // executeSearchPlan is total by design; this is belt-and-braces so a
       // search bug can never turn a planned turn into a 500.
@@ -160,16 +167,77 @@ async function planTurn(
 
   if (stream.closed) return;
 
-  const note = willSearch
-    ? `search complete (${queries.length} ${queries.length === 1 ? 'query' : 'queries'})`
-    : searchProvider === null
-      ? 'search disabled'
-      : 'no search needed';
+  if (!synthesizer) {
+    const note = willSearch
+      ? `search complete (${queries.length} ${queries.length === 1 ? 'query' : 'queries'})`
+      : searchProvider === null
+        ? 'search disabled'
+        : 'no search needed';
+    stream.send({ type: 'status', text: `${note} — synthesis disabled` });
+    stream.send({ type: 'done' });
+    stream.end();
+    return;
+  }
 
-  stream.send({
-    type: 'status',
-    text: `${note} — synthesis arrives in phase 3`,
-  });
+  stream.send({ type: 'status', text: 'writing the answer…' });
+
+  let result: SynthesisResult;
+  try {
+    result = await synthesizer.run(
+      {
+        message: input.message,
+        now,
+        userTz: input.userTz,
+        plan,
+        memoryIndex: input.memoryIndex,
+        groups,
+        signal: stream.signal,
+      },
+      (text) => stream.send({ type: 'token', text }),
+    );
+  } catch (error) {
+    if (stream.closed) return;
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[chat] synthesis failed:', detail);
+    stream.send({
+      type: 'error',
+      message: 'Could not finish the answer. Nothing was saved.',
+    });
+    stream.end();
+    return;
+  }
+
+  // The client may have left after the last token. A complete answer is only
+  // persisted if someone can still be shown it.
+  if (stream.closed) return;
+
+  try {
+    db.persistAnswer({
+      sessionId: input.sessionId,
+      content: result.answer,
+      createdAt: now.toISOString(),
+      snapshot: result.snapshot
+        ? {
+            label: result.snapshot.label,
+            entities: result.snapshot.entities,
+            claims: result.snapshot.claims,
+            sources: result.snapshot.sources,
+            observedAt: now.toISOString(),
+            supersedesId: result.snapshot.supersedesId,
+          }
+        : null,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error('[chat] failed to persist the answer:', detail);
+    stream.send({
+      type: 'error',
+      message: 'The answer could not be saved, so it was not kept.',
+    });
+    stream.end();
+    return;
+  }
+
   stream.send({ type: 'done' });
   stream.end();
 }
@@ -178,6 +246,7 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
   const router = Router();
   const planner = deps.planner ?? null;
   const searchProvider = deps.searchProvider ?? null;
+  const synthesizer = deps.synthesizer ?? null;
   const now = deps.now ?? (() => new Date());
 
   router.post('/chat', async (req, res) => {
@@ -233,10 +302,12 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
       }
 
       await planTurn(
+        deps.db,
         stream,
         planner,
         searchProvider,
-        { message, userTz, memoryIndex },
+        synthesizer,
+        { sessionId, message, userTz, memoryIndex },
         at,
       );
     } catch (error) {

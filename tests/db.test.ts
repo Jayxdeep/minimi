@@ -233,6 +233,77 @@ describe('snapshots', () => {
   });
 });
 
+describe('persistAnswer', () => {
+  const snapshotInput = {
+    label: 'CRM shortlist',
+    entities: ['ToolA'],
+    claims: [
+      {
+        subject: 'ToolA',
+        attribute: 'pricing',
+        value: '$12/user/month',
+        as_of: '2025-11-17',
+        source_ids: [0],
+        confidence: 0.8,
+      },
+    ],
+    sources: [
+      {
+        url: 'https://example.com/pricing',
+        title: 'ToolA pricing',
+        retrieved_at: '2025-11-18T10:00:00.000Z',
+      },
+    ],
+    observedAt: '2025-11-18T10:00:00.000Z',
+  };
+
+  it('writes the assistant episode and the snapshot together', () => {
+    const saved = db.persistAnswer({
+      sessionId: 's1',
+      content: 'ToolA is $12/user/month.',
+      createdAt: '2025-11-18T10:00:00.000Z',
+      snapshot: snapshotInput,
+    });
+
+    expect(saved.snapshot).not.toBeNull();
+    expect(db.listMessagesBySession('s1')).toEqual([saved.message]);
+    expect(db.getSnapshot(saved.snapshot?.id ?? '')).toEqual(saved.snapshot);
+  });
+
+  it('rolls back the assistant message when the snapshot is invalid', () => {
+    const before = db.countMessages('s1');
+
+    expect(() =>
+      db.persistAnswer({
+        sessionId: 's1',
+        content: 'this must not survive',
+        createdAt: '2025-11-18T10:00:00.000Z',
+        snapshot: {
+          label: 'broken',
+          entities: [],
+          // @ts-expect-error deliberately invalid claim shape
+          claims: [{ subject: 'ToolA' }],
+          sources: [],
+        },
+      }),
+    ).toThrow();
+
+    expect(db.countMessages('s1')).toBe(before);
+  });
+
+  it('writes an answer with no verifiable claims on its own', () => {
+    const saved = db.persistAnswer({
+      sessionId: 's1',
+      content: 'Just chatting.',
+      createdAt: '2025-11-18T10:00:00.000Z',
+      snapshot: null,
+    });
+
+    expect(saved.snapshot).toBeNull();
+    expect(db.listMessagesBySession('s1')).toHaveLength(1);
+  });
+});
+
 describe('topic keys', () => {
   it('are stable when the model renames the label', () => {
     expect(deriveTopicKey('CRM shortlist (5 tools)', ['ToolA', 'ToolB'])).toBe(

@@ -8,6 +8,7 @@ import { createPlanner, type Planner } from './planner';
 import { createChatRouter } from './routes/chat';
 import { TavilyProvider } from './search/tavily';
 import type { SearchProvider } from './search/types';
+import { createSynthesizer, type Synthesizer } from './synth';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
 
@@ -20,6 +21,7 @@ export interface AppOptions {
   planner?: Planner | null;
   /** Explicit for the same reason: tests use fakes or null. */
   searchProvider?: SearchProvider | null;
+  synthesizer?: Synthesizer | null;
   now?: () => Date;
 }
 
@@ -41,6 +43,7 @@ export function createApp(db: Db, options: AppOptions = {}): Express {
       chunkDelayMs: options.chunkDelayMs ?? config.streamTokenDelayMs,
       planner: options.planner ?? null,
       searchProvider: options.searchProvider ?? null,
+      synthesizer: options.synthesizer ?? null,
       ...(options.now ? { now: options.now } : {}),
     }),
   );
@@ -48,30 +51,39 @@ export function createApp(db: Db, options: AppOptions = {}): Express {
   return app;
 }
 
-export function buildPlanner(): Planner | null {
-  if (!config.deepseekApiKey) return null;
+export interface Models {
+  planner: Planner | null;
+  synthesizer: Synthesizer | null;
+}
 
-  return createPlanner(
-    new DeepSeekClient({
-      apiKey: config.deepseekApiKey,
-      baseUrl: config.deepseekBaseUrl,
-      model: config.deepseekModel,
-      timeoutMs: config.llmTimeoutMs,
-    }),
-  );
+export function buildModels(): Models {
+  if (!config.deepseekApiKey) return { planner: null, synthesizer: null };
+
+  // One client, two prompts.
+  const client = new DeepSeekClient({
+    apiKey: config.deepseekApiKey,
+    baseUrl: config.deepseekBaseUrl,
+    model: config.deepseekModel,
+    timeoutMs: config.llmTimeoutMs,
+  });
+
+  return {
+    planner: createPlanner(client),
+    synthesizer: createSynthesizer(client),
+  };
 }
 
 export function startServer(): void {
   const db = createDb(config.dbPath);
   db.migrate();
 
-  const planner = buildPlanner();
+  const { planner, synthesizer } = buildModels();
   const searchProvider = new TavilyProvider({ apiKey: config.tavilyApiKey });
-  const app = createApp(db, { planner, searchProvider });
+  const app = createApp(db, { planner, synthesizer, searchProvider });
 
   const server = app.listen(config.port, () => {
     const mode = planner
-      ? `planner (${config.deepseekModel})`
+      ? `planner + synthesizer (${config.deepseekModel})`
       : 'echo (no DEEPSEEK_API_KEY)';
     const search = config.tavilyApiKey ? 'tavily' : 'stub (no TAVILY_API_KEY)';
     console.log(`minimi-agent  http://localhost:${config.port}`);

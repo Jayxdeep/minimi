@@ -8,8 +8,14 @@ import { createDb, type Db } from '../src/db';
 import { createPlanner } from '../src/planner';
 import { chunkReply } from '../src/routes/chat';
 import type { SearchProvider } from '../src/search/types';
+import { createSynthesizer } from '../src/synth';
 import type { SseEvent } from '../src/types';
-import { FIXED_NOW, FakeLLMClient, plannerJson } from './helpers/fake-llm';
+import {
+  FIXED_NOW,
+  FakeLLMClient,
+  plannerJson,
+  synthesisText,
+} from './helpers/fake-llm';
 
 let db: Db;
 let app: Express;
@@ -507,5 +513,140 @@ describe('POST /chat with search', () => {
     expect(results.data.every((group) => group.results.length === 0)).toBe(true);
     expect(events.some((event) => event.type === 'error')).toBe(false);
     expect(events.at(-1)).toEqual({ type: 'done' });
+  });
+});
+
+describe('POST /chat with a synthesizer', () => {
+  const ANSWER = 'Supabase Pro is $25/mo [1].';
+
+  const TRAILER = {
+    label: 'Postgres hosting pricing',
+    entities: ['Supabase'],
+    claims: [
+      {
+        subject: 'Supabase',
+        attribute: 'pricing',
+        value: 'Pro is $25/mo',
+        as_of: '2026-11-17',
+        source_ids: [1],
+        confidence: 0.8,
+      },
+    ],
+    used_sources: [1],
+    supersedes_id: null,
+  };
+
+  function synthApp(text: string) {
+    const llm = new FakeLLMClient([plannerJson()], [text]);
+    const provider: SearchProvider = {
+      async search() {
+        return [
+          {
+            url: 'https://supabase.com/pricing',
+            title: 'Supabase Pricing',
+            snippet: 'Pro is $25/mo',
+            publishedDate: '2026-11-17',
+          },
+        ];
+      },
+    };
+
+    return createApp(db, {
+      chunkDelayMs: 0,
+      planner: createPlanner(llm),
+      searchProvider: provider,
+      synthesizer: createSynthesizer(llm),
+      now: () => FIXED_NOW,
+    });
+  }
+
+  it('streams tokens and persists the answer plus snapshot', async () => {
+    const response = await collectSseFrom(
+      synthApp(synthesisText(ANSWER, TRAILER)),
+      { sessionId: 's-synth', message: 'has postgres hosting pricing changed?' },
+    );
+
+    const events = parseEvents(String(response.body));
+    const types = events.map((event) => event.type);
+
+    expect(types).toContain('plan');
+    expect(types).toContain('searching');
+    expect(types).toContain('search_results');
+    expect(types.filter((type) => type === 'token').length).toBeGreaterThan(1);
+    expect(types.at(-1)).toBe('done');
+    expect(types).not.toContain('error');
+
+    const streamed = tokenText(events);
+    expect(streamed).toContain(ANSWER);
+    expect(streamed).not.toContain('```json');
+    expect(streamed).not.toContain('"claims"');
+
+    const rows = db.listMessagesBySession('s-synth');
+    expect(rows.map((row) => row.role)).toEqual(['user', 'assistant']);
+    expect(rows[1]?.content).toContain(ANSWER);
+
+    const snapshots = db.findSnapshotsByTimeRange(
+      FIXED_NOW.toISOString(),
+      FIXED_NOW.toISOString(),
+    );
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.label).toBe('Postgres hosting pricing');
+    expect(snapshots[0]?.claims[0]?.subject).toBe('Supabase');
+    expect(snapshots[0]?.sources[0]?.url).toBe(
+      'https://supabase.com/pricing',
+    );
+    expect(snapshots[0]?.messageId).toBe(rows[1]?.id);
+  });
+
+  it('streams the answer but saves nothing when the trailer is invalid', async () => {
+    const response = await collectSseFrom(
+      synthApp('An answer with no trailer.'),
+      { sessionId: 's-bad-trailer', message: 'hello' },
+    );
+
+    const events = parseEvents(String(response.body));
+
+    expect(events.some((event) => event.type === 'token')).toBe(true);
+    expect(events.some((event) => event.type === 'error')).toBe(true);
+    expect(events.some((event) => event.type === 'done')).toBe(false);
+
+    expect(
+      db.listMessagesBySession('s-bad-trailer').map((row) => row.role),
+    ).toEqual(['user']);
+    expect(
+      db.findSnapshotsByTimeRange(
+        FIXED_NOW.toISOString(),
+        FIXED_NOW.toISOString(),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('persists a chat answer with no snapshot', async () => {
+    const text = synthesisText('Hello there.', {
+      label: 'Greeting',
+      entities: [],
+      claims: [],
+      used_sources: [],
+      supersedes_id: null,
+    });
+
+    const response = await collectSseFrom(synthApp(text), {
+      sessionId: 's-chat',
+      message: 'hi',
+    });
+
+    const events = parseEvents(String(response.body));
+    expect(events.at(-1)).toEqual({ type: 'done' });
+
+    expect(db.listMessagesBySession('s-chat').map((row) => row.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(
+      db.findSnapshotsByTimeRange(
+        FIXED_NOW.toISOString(),
+        FIXED_NOW.toISOString(),
+      ),
+    ).toHaveLength(0);
   });
 });

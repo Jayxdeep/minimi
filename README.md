@@ -7,12 +7,12 @@ Every turn is stored as an immutable episode. Every answer with verifiable claim
 stored as a timestamped observation. When you come back later and ask *"is that still
 true?"*, the agent can show you what it said, what it saw, and what has moved since.
 
-> **Status: Phase 2 of 5.** The planner is live and its search plan now executes
-> for real: up to six Tavily queries fan out in parallel, and the raw results stream into
-> a "Web Results" card. Synthesis into an answer (and snapshotting) lands in Phase 3.
-> Without a `DEEPSEEK_API_KEY` the server falls back to echo mode; without
-> `TAVILY_API_KEY` search returns an explicit stub. See
-> [Phase log](DESIGN.md#phase-log) for exactly what is stubbed.
+> **Status: Phase 3 of 5.** The full turn is live: planner → parallel Tavily search →
+> streamed answer → atomic snapshot. Answers cite numbered sources, and a verifiable
+> answer stores its claims and sources with an observation timestamp. Cross-turn recall
+> into the synthesizer (the three canonical queries) is Phase 4. Without a
+> `DEEPSEEK_API_KEY` the server falls back to echo mode; without `TAVILY_API_KEY` search
+> returns an explicit stub. See [Phase log](DESIGN.md#phase-log).
 
 ---
 
@@ -30,18 +30,22 @@ Open <http://localhost:3000>. **No API keys are needed to boot** — without a
 `DEEPSEEK_API_KEY` the server runs in echo mode; without `TAVILY_API_KEY` the search
 provider returns a clearly labelled stub instead of calling the network.
 
-With keys, every turn runs the planner, executes its search plan in parallel, and streams
-both to the UI:
+With keys, every turn runs the planner, executes its search plan in parallel, streams the
+answer, and stores the episode plus a snapshot:
 
 ```
 data: {"type":"status","text":"planning…"}
 data: {"type":"plan","plan":{"intent":"change", ...}}
 data: {"type":"searching","queries":["Supabase pricing","Neon pricing"]}
 data: {"type":"search_results","data":[{"query":"...","results":[...]}]}
+data: {"type":"status","text":"writing the answer…"}
+data: {"type":"token","text":"Supabase Pro is "}
 data: {"type":"done"}
 ```
 
-Synthesis into a written answer arrives in Phase 3.
+The fenced JSON trailer the model uses for claims/sources is stripped before it reaches the
+browser. If it is invalid, the turn ends with `error` and **nothing is persisted** — not even
+the streamed answer.
 
 ## Scripts
 
@@ -77,8 +81,8 @@ browser ──POST /chat──▶ express
                           ├─ planner (one JSON call) → intent, date ranges, keywords,
                           │                             search plan, verify ids
                           ├─ exact recall + deterministic search fan-out (≤ 6, parallel)
-                          ├─ (Phase 3) synthesizer → streamed markdown + fenced JSON
-                          └─ emit plan + raw results (now) / persist answer + snapshot (Phase 3)
+                          ├─ synthesizer → streamed markdown + fenced JSON trailer
+                          └─ persist episode + snapshot in one transaction, emit done
 ```
 
 Note the ordering: memory is loaded **before** the planner, so the planner can
@@ -120,6 +124,11 @@ src/
   planner/
     prompt.ts      system prompt + clock/timezone/memory injection
     index.ts       parse → validate (Zod) → sanitize, one bounded retry
+  synth/
+    prompt.ts      answer prompt + numbered sources + trailer contract
+    fence.ts       streaming splitter (answer now, JSON trailer withheld)
+    sources.ts     citation indexes → real URLs, evidence remapping
+    index.ts       stream, parse trailer, build claims/sources
   search/
     types.ts       SearchProvider seam + result/group shapes
     tavily.ts      REST client, mode mapping, offline stub
@@ -138,9 +147,11 @@ public/
     main.js        entry: wires the form, runs one turn
     api.js         POST /chat transport + typed errors
     sse.js         SSE frame parser (pure, unit-tested)
-    ui.js          ChatView, bubbles, plan card (DOM only)
+    ui.js          ChatView, bubbles, plan/results cards (DOM only)
+    markdown.js    small safe renderer (parsers unit-tested)
+    url.js         http(s)-only URL helpers
     session.js     session id persistence
-tests/             85 tests, all offline
+tests/             120 tests, all offline
 data/              SQLite lives here (gitignored)
 ```
 
@@ -155,9 +166,10 @@ npm test        # offline: in-memory SQLite, no API keys, no network
 The suite covers migration idempotency, schema shape, time-range boundaries, keyword
 recall, snapshot round-trips, foreign-key enforcement, SSE framing (including byte-split
 frames and multi-byte characters), disconnect safety, exact echo reconstruction,
-memory-index construction, planner parsing/sanitisation, the single schema retry,
-planner-mode streaming, Tavily request mapping, fan-out caps, and per-query failure
-isolation. The LLM and the network are faked, so `npm test` never leaves the machine.
+memory-index construction, planner parsing/sanitisation, the single schema retry, Tavily
+request mapping, fan-out caps, failure isolation, URL dedupe, fence splitting, trailer
+parsing, citation remapping, and atomic episode + snapshot writes including rollback. The
+LLM and the network are faked, so `npm test` never leaves the machine.
 
 ## Design
 

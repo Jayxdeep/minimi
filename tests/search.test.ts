@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { executeSearchPlan, MAX_FANOUT } from '../src/search/fanout';
+import { executeSearchPlan, dedupeSearchGroups, MAX_FANOUT } from '../src/search/fanout';
 import { STUB_RESULT, TavilyProvider } from '../src/search/tavily';
 import type { SearchPlan, SearchProvider } from '../src/search/types';
 
@@ -129,6 +129,45 @@ describe('TavilyProvider', () => {
     await expect(provider.search('q', { mode: 'quick' })).rejects.toThrow(
       /results array/,
     );
+  });
+});
+
+describe('dedupeSearchGroups', () => {
+  it('keeps the first occurrence of a URL and preserves order', () => {
+    const groups = [
+      {
+        query: 'a',
+        results: [
+          { url: 'https://x.com/1', title: 'X1', snippet: '' },
+          { url: 'https://x.com/2', title: 'X2', snippet: '' },
+        ],
+      },
+      {
+        query: 'b',
+        results: [
+          { url: 'https://x.com/2', title: 'X2 again', snippet: '' },
+          { url: 'https://x.com/3', title: 'X3', snippet: '' },
+        ],
+      },
+    ];
+
+    const deduped = dedupeSearchGroups(groups);
+
+    expect(deduped[0]?.results.map((result) => result.url)).toEqual([
+      'https://x.com/1',
+      'https://x.com/2',
+    ]);
+    expect(deduped[1]?.results.map((result) => result.url)).toEqual([
+      'https://x.com/3',
+    ]);
+    expect(deduped[1]?.query).toBe('b');
+  });
+
+  it('is a no-op for a disjoint batch', () => {
+    const groups = [
+      { query: 'a', results: [{ url: 'https://a.com', title: 'A', snippet: '' }] },
+    ];
+    expect(dedupeSearchGroups(groups)).toEqual(groups);
   });
 });
 

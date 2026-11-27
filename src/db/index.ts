@@ -145,6 +145,19 @@ export interface InsertSnapshotInput {
   id?: string;
 }
 
+export interface PersistAnswerInput {
+  sessionId: string;
+  content: string;
+  createdAt?: string;
+  /** Absent/null means the answer made no citable claims. */
+  snapshot?: Omit<InsertSnapshotInput, 'messageId'> | null;
+}
+
+export interface PersistAnswerResult {
+  message: Message;
+  snapshot: Snapshot | null;
+}
+
 export interface KeywordSearchOptions {
   start?: string;
   end?: string;
@@ -167,6 +180,11 @@ export interface Db {
   searchMessages(keywords: readonly string[], options?: KeywordSearchOptions): Message[];
 
   insertSnapshot(input: InsertSnapshotInput): Snapshot;
+  /**
+   * Persist the assistant episode and its observation in one IMMEDIATE
+   * transaction: a turn is remembered with evidence, or not at all.
+   */
+  persistAnswer(input: PersistAnswerInput): PersistAnswerResult;
   getSnapshot(id: string): Snapshot | undefined;
   listSnapshotsByTopic(topicKey: string): Snapshot[];
   findSnapshotsByTimeRange(start: string, end: string): Snapshot[];
@@ -369,6 +387,26 @@ export function createDb(dbPath: string): Db {
       const snapshot = db.getSnapshot(id);
       if (!snapshot) throw new Error(`Failed to insert snapshot ${id}`);
       return snapshot;
+    },
+
+    persistAnswer(input) {
+      // BEGIN IMMEDIATE: the answer and its snapshot commit together.
+      const write = raw.transaction((data: PersistAnswerInput) => {
+        const message = db.insertMessage({
+          sessionId: data.sessionId,
+          role: 'assistant',
+          content: data.content,
+          ...(data.createdAt ? { createdAt: data.createdAt } : {}),
+        });
+
+        const snapshot = data.snapshot
+          ? db.insertSnapshot({ ...data.snapshot, messageId: message.id })
+          : null;
+
+        return { message, snapshot };
+      });
+
+      return write.immediate(input);
     },
 
     getSnapshot(id) {
