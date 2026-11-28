@@ -233,9 +233,18 @@ export function createPlanner(
           const plan = finalizePlan(parsed.value, context);
 
           // Deterministic guardrail: a pasted document is answered from itself.
+          // Clearing the window, keywords and verify ids matters as much as the
+          // intent: otherwise recall still loads snapshots and the synthesizer
+          // summarises memory instead of the text.
           if (isLargePastedText(message)) {
             return {
-              plan: { ...plan, intent: 'chat', search_plan: [] },
+              plan: {
+                ...plan,
+                intent: 'chat',
+                search_plan: [],
+                memory: { window: null, keywords: [] },
+                verify_snapshot_ids: [],
+              },
               attempts: attempt,
             };
           }

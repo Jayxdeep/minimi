@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import type { Db } from '../db';
 import { buildMemoryIndex } from '../memory';
-import { degradedPlan, PlannerError, type Planner } from '../planner';
-import { recallMemory, recallSnapshotIds } from '../recall';
+import { degradedPlan, isLargePastedText, PlannerError, type Planner } from '../planner';
+import { recallMemory, recallSnapshotIds, type Recall } from '../recall';
 import { executeSearchPlan, dedupeSearchGroups } from '../search/fanout';
 import type { SearchGroup, SearchProvider } from '../search/types';
 import { openSse, type SseStream } from '../sse';
@@ -146,9 +146,11 @@ async function planTurn(
   stream.send({ type: 'plan', plan });
 
   // Deterministic recall: the planner chose what to look for; this loads it.
-  const recall = recallMemory(db, plan, {
-    excludeMessageId: input.userMessageId,
-  });
+  // Pasted text is the exception: never inject memory into that answer, even if
+  // a plan somehow still carries a window.
+  const recall: Recall = isLargePastedText(input.message)
+    ? { episodes: [], snapshots: [] }
+    : recallMemory(db, plan, { excludeMessageId: input.userMessageId });
 
   const queries = plan.search_plan;
   const willSearch = searchProvider !== null && queries.length > 0;
@@ -281,8 +283,10 @@ export function createChatRouter(deps: ChatRouterDeps): Router {
     const at = now();
 
     // Memory means "before this turn". Build the index before inserting the
-    // user message so the planner is not shown its own question twice.
-    const memoryIndex = planner ? buildMemoryIndex(deps.db, at) : [];
+    // user message so the planner is not shown its own question twice. Pasted
+    // text gets no index at all: there is nothing to recall about a document.
+    const pastedText = isLargePastedText(message);
+    const memoryIndex = planner && !pastedText ? buildMemoryIndex(deps.db, at) : [];
 
     let userMessageId = '';
 

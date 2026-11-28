@@ -245,6 +245,16 @@ describe('SYNTH_SYSTEM_PROMPT', () => {
     expect(SYNTH_SYSTEM_PROMPT).toContain('**Unchanged**');
     expect(SYNTH_SYSTEM_PROMPT).toContain("**Couldn't verify**");
   });
+
+  it('puts the pasted-text override at the very top', () => {
+    expect(SYNTH_SYSTEM_PROMPT.startsWith('CRITICAL:')).toBe(true);
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'IGNORE the RECALLED MEMORY section entirely',
+    );
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'Do not summarize past conversations.',
+    );
+  });
 });
 
 describe('createSynthesizer', () => {

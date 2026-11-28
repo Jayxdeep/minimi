@@ -269,8 +269,9 @@ prompt rules came from live failures:
 - Read every snippet, especially markdown tables and version numbers; if a source contains
   the exact answer, extract it verbatim even if it falls outside the requested time window.
 - When the user pastes a large block of text and asks about it, answer from that text and do
-  not search. The planner also clamps this in code (`>= 500` characters → `chat`, empty
-  `search_plan`), because prompt compliance is not guaranteed.
+  not search or recall. The synthesizer prompt puts this override first; code also clamps the
+  plan (`>= 500` characters → `chat`, no window or keywords, empty `search_plan`/verify ids)
+  and passes an empty recall, so a model that ignores the instruction still cannot see memory.
 
 ## 7. Search
 
@@ -387,7 +388,7 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 4): 142 tests. Beyond the earlier coverage, recall is tested across
+Current suite (Phase 4): 144 tests. Beyond the earlier coverage, recall is tested across
 all four sources (window, FTS keywords, explicit re-verify ids, episode-linked snapshots),
 including exclusion of the current turn and priority-preserving caps. The eval harness
 (`tests/eval.test.ts`) seeds the Nov 19 CRM shortlist and the Nov 3 Postgres comparison,

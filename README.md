@@ -158,7 +158,7 @@ public/
     markdown.js    small safe renderer (parsers unit-tested)
     url.js         http(s)-only URL helpers
     session.js     session id persistence
-tests/             142 tests, all offline
+tests/             144 tests, all offline
 data/              SQLite lives here (gitignored)
 ```
 

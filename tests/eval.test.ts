@@ -466,6 +466,72 @@ describe('eval: pasted text', () => {
     expect(snapshotsAt(NOW.toISOString())).toHaveLength(0);
     expect(db.listMessagesBySession('summary')).toHaveLength(2);
   });
+
+  it('never recalls memory when the message is a pasted document', async () => {
+    // Memory exists and the plan asks for it; the turn must still ignore it.
+    seedCrm();
+
+    const pasted = `Here is a page I copied:\n\n${'ToolA costs $12 per user per month and includes three pipelines. '.repeat(12)}\n\nSummarize this whole thing.`;
+    expect(pasted.length).toBeGreaterThan(500);
+
+    const planWithRecall: PlannerOutput = {
+      ...basePlan(),
+      intent: 'recall',
+      temporal_refs: [
+        { expression: '19 November', resolved_range: [NOV_19, NOV_19] },
+      ],
+      memory: {
+        window: [NOV_19, '2026-11-19T23:59:59.999Z'],
+        keywords: ['crm', 'shortlist'],
+      },
+      search_plan: [{ query: 'crm pricing', mode: 'quick' }],
+      verify_snapshot_ids: [CRM_SNAPSHOT_ID],
+    };
+
+    const provider = fakeProvider();
+
+    const { events, streamed, llm } = await runTurn({
+      sessionId: 'pasted-with-memory',
+      message: pasted,
+      plan: planWithRecall,
+      answer: synthesisText(
+        '**Summary** — The pasted page lists one plan at $12 per user per month with three pipelines.',
+        {
+          label: 'Pasted page summary',
+          entities: [],
+          claims: [],
+          used_sources: [],
+          supersedes_id: null,
+        },
+      ),
+      provider,
+    });
+
+    const planEvent = events.find((event) => event.type === 'plan');
+    if (planEvent?.type !== 'plan') throw new Error('expected a plan event');
+
+    expect(planEvent.plan.intent).toBe('chat');
+    expect(planEvent.plan.memory.window).toBeNull();
+    expect(planEvent.plan.memory.keywords).toEqual([]);
+    expect(planEvent.plan.search_plan).toEqual([]);
+    expect(planEvent.plan.verify_snapshot_ids).toEqual([]);
+
+    expect(events.some((event) => event.type === 'searching')).toBe(false);
+    expect(provider.search).not.toHaveBeenCalled();
+
+    const prompt = synthesizerPrompt(llm);
+    expect(prompt).toContain('Here is a page I copied');
+    expect(prompt).toContain('(no stored memories matched this question)');
+    expect(prompt).not.toContain(CRM_SNAPSHOT_ID);
+    expect(prompt).not.toContain('$12/user/mo');
+
+    expect(streamed).toContain('**Summary**');
+    expect(streamed).not.toContain('CRM shortlist');
+
+    // The memory was genuinely present; the turn chose not to inject it.
+    expect(db.getSnapshot(CRM_SNAPSHOT_ID)).toBeDefined();
+    expect(snapshotsAt(NOW.toISOString())).toHaveLength(0);
+  });
 });
 
 describe('eval: missing memory must not be invented', () => {

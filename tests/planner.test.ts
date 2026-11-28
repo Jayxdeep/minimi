@@ -264,6 +264,10 @@ describe('planner: pasted text', () => {
 
     expect(plan.intent).toBe('chat');
     expect(plan.search_plan).toEqual([]);
+    // The recall path must be closed too, or the synthesizer summarises memory.
+    expect(plan.memory.window).toBeNull();
+    expect(plan.memory.keywords).toEqual([]);
+    expect(plan.verify_snapshot_ids).toEqual([]);
   });
 
   it('leaves a short lookup untouched', async () => {
@@ -290,6 +294,7 @@ describe('planner: pasted text', () => {
     const system = llm.calls[0]?.messages[0]?.content ?? '';
     expect(system).toContain('large block of text');
     expect(system).toContain('search_plan to []');
+    expect(system).toContain('memory.window to null');
   });
 });
 
