@@ -100,6 +100,38 @@ describe('messages', () => {
     expect(hits.map((message) => message.content)).toEqual(['middle']);
   });
 
+  it('returns the last session messages, oldest first, excluding the current turn', () => {
+    const inserted = Array.from({ length: 6 }, (_, index) =>
+      db.insertMessage({
+        sessionId: 's1',
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `m${index}`,
+        createdAt: `2025-11-0${index + 1}T09:00:00.000Z`,
+      }),
+    );
+
+    db.upsertSession('other');
+    db.insertMessage({
+      sessionId: 'other',
+      role: 'user',
+      content: 'not this session',
+      createdAt: '2025-11-09T09:00:00.000Z',
+    });
+
+    const recent = db.listRecentSessionMessages(
+      's1',
+      4,
+      inserted[5]?.id ?? '',
+    );
+
+    expect(recent.map((message) => message.content)).toEqual([
+      'm1',
+      'm2',
+      'm3',
+      'm4',
+    ]);
+  });
+
   it('enforces foreign keys', () => {
     expect(() =>
       db.insertMessage({ sessionId: 'missing', role: 'user', content: 'orphan' }),

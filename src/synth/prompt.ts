@@ -1,6 +1,7 @@
 import type { LlmMessage } from '../llm/types';
+import { condense } from '../memory';
 import { formatRecall, type Recall } from '../recall';
-import type { PlannerOutput } from '../types';
+import type { Message, PlannerOutput } from '../types';
 import { formatLocalNow } from '../time';
 import { formatSourcesForPrompt, type FlatSource } from './sources';
 
@@ -16,6 +17,7 @@ Write the final answer in GitHub-flavoured markdown.
 - Cite sources as [n] using the numbered SOURCES list. Only cite an index that exists. Never invent a URL, price, date, release, or quotation.
 - Carefully read ALL provided search snippets. Pay special attention to markdown tables and specific version numbers. If a source provides the exact answer, extract it verbatim, even if it falls outside the user's requested time window.
 - If the user provides a large block of text in their message and asks a question about it (like "summarize this" or "what does this say"), do NOT search the web. Base your answer entirely on the text they provided.
+- If the user asks to summarize, explain, or elaborate on "this", "that", or "it", look at the RECENT CONVERSATION HISTORY. If the last assistant message contains a detailed answer, summarize THAT answer. Do not say you don't have the text.
 - Lead with the direct answer, then the supporting detail. Keep it under ~250 words unless the question genuinely needs more.
 - If the sources and memory do not establish something, say so plainly. A confident guess is worse than an honest gap.
 - RECALLED MEMORY is evidence, not background. If it lists a snapshot with claims, those claims exist: compare against them. Never say you have no record of a date or topic that appears in RECALLED MEMORY, and never claim a stored claim is missing when it is shown above.
@@ -55,7 +57,21 @@ export interface SynthesisPromptInput {
   userTz: string;
   plan: PlannerOutput;
   recall: Recall;
+  recentHistory?: readonly Message[];
   flat: readonly FlatSource[];
+}
+
+function formatRecentHistory(messages: readonly Message[]): string {
+  if (messages.length === 0) {
+    return '(this is the first message in this session)';
+  }
+
+  return messages
+    .map(
+      (message) =>
+        `[${message.createdAt}] ${message.role}: ${condense(message.content, 1_500)}`,
+    )
+    .join('\n');
 }
 
 export function buildSynthesisMessages(input: SynthesisPromptInput): LlmMessage[] {
@@ -69,6 +85,9 @@ export function buildSynthesisMessages(input: SynthesisPromptInput): LlmMessage[
     '',
     'PLAN:',
     JSON.stringify(input.plan),
+    '',
+    '### RECENT CONVERSATION HISTORY',
+    formatRecentHistory(input.recentHistory ?? []),
     '',
     'RECALLED MEMORY:',
     formatRecall(input.recall),

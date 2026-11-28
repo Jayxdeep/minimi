@@ -174,6 +174,12 @@ export interface Db {
 
   insertMessage(input: InsertMessageInput): Message;
   listMessagesBySession(sessionId: string): Message[];
+  /** Newest-first selection, returned oldest-first. Excludes the current turn. */
+  listRecentSessionMessages(
+    sessionId: string,
+    limit: number,
+    excludeMessageId?: string,
+  ): Message[];
   listMessagesByTimeRange(start: string, end: string): Message[];
   /** Global, newest-first selection then returned oldest-first for prompt order. */
   listRecentMessages(sinceIso: string, limit: number): Message[];
@@ -300,6 +306,28 @@ export function createDb(dbPath: string): Db {
         )
         .all(sessionId)
         .map(mapMessage);
+    },
+
+    listRecentSessionMessages(sessionId, limit, excludeMessageId) {
+      const sql = excludeMessageId
+        ? `SELECT ${MESSAGE_COLUMNS} FROM messages
+           WHERE session_id = ? AND id != ?
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT ?`
+        : `SELECT ${MESSAGE_COLUMNS} FROM messages
+           WHERE session_id = ?
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT ?`;
+
+      const rows = excludeMessageId
+        ? raw
+            .prepare<[string, string, number], MessageRow>(sql)
+            .all(sessionId, excludeMessageId, limit)
+        : raw
+            .prepare<[string, number], MessageRow>(sql)
+            .all(sessionId, limit);
+
+      return rows.reverse().map(mapMessage);
     },
 
     listMessagesByTimeRange(start, end) {

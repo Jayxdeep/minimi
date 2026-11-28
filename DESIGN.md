@@ -272,6 +272,10 @@ prompt rules came from live failures:
   not search or recall. The synthesizer prompt puts this override first; code also clamps the
   plan (`>= 500` characters → `chat`, no window or keywords, empty `search_plan`/verify ids)
   and passes an empty recall, so a model that ignores the instruction still cannot see memory.
+- The last four messages of the **current session** are injected as
+  `### RECENT CONVERSATION HISTORY` (oldest first, current turn excluded). This is separate
+  from global recall: it is what makes "summarize this" refer to the answer the agent just
+  gave, while recall answers "what did we discuss on 3 November".
 
 ## 7. Search
 
@@ -388,7 +392,7 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 4): 144 tests. Beyond the earlier coverage, recall is tested across
+Current suite (Phase 4): 149 tests. Beyond the earlier coverage, recall is tested across
 all four sources (window, FTS keywords, explicit re-verify ids, episode-linked snapshots),
 including exclusion of the current turn and priority-preserving caps. The eval harness
 (`tests/eval.test.ts`) seeds the Nov 19 CRM shortlist and the Nov 3 Postgres comparison,

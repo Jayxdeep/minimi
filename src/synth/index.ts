@@ -1,7 +1,7 @@
 import type { LLMClient } from '../llm/types';
 import type { Recall } from '../recall';
 import type { SearchGroup } from '../search/types';
-import type { PlannerOutput } from '../types';
+import type { Message, PlannerOutput } from '../types';
 import { AnswerSplitter } from './fence';
 import { buildSynthesisMessages } from './prompt';
 import { buildEvidence, flattenSources } from './sources';
@@ -35,6 +35,8 @@ export interface SynthesisContext {
   userTz: string;
   plan: PlannerOutput;
   recall: Recall;
+  /** Last turns of this session, oldest first. Excludes the current message. */
+  recentHistory?: readonly Message[];
   groups: readonly SearchGroup[];
   /** Snapshot ids the model is allowed to supersede. Defaults to recalled ids. */
   allowedSnapshotIds?: ReadonlySet<string>;
@@ -86,6 +88,7 @@ export function createSynthesizer(client: LLMClient): Synthesizer {
         userTz: context.userTz,
         plan: context.plan,
         recall: context.recall,
+        recentHistory: context.recentHistory ?? [],
         flat,
       });
 

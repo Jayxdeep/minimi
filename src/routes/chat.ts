@@ -190,6 +190,12 @@ async function planTurn(
 
   stream.send({ type: 'status', text: 'writing the answer…' });
 
+  const recentHistory = db.listRecentSessionMessages(
+    input.sessionId,
+    4,
+    input.userMessageId,
+  );
+
   let result: SynthesisResult;
   try {
     result = await synthesizer.run(
@@ -199,6 +205,7 @@ async function planTurn(
         userTz: input.userTz,
         plan,
         recall,
+        recentHistory,
         groups,
         allowedSnapshotIds: new Set([
           ...recallSnapshotIds(recall),

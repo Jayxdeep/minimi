@@ -579,3 +579,77 @@ describe('eval: missing memory must not be invented', () => {
     expect(db.listMessagesBySession('q2-empty')).toHaveLength(2);
   });
 });
+
+describe('eval: conversational follow-up', () => {
+  it('summarizes the previous answer instead of saying there is no text', async () => {
+    const longAnswer =
+      'TypeScript is a typed superset of JavaScript. It adds static types, interfaces, and generics, and compiles to plain JavaScript. Teams use it to catch errors at compile time and make large codebases easier to refactor.';
+    const followUp =
+      '**Summary** — TypeScript adds static types to JavaScript so errors are caught before runtime and large codebases are easier to maintain.';
+
+    const emptyTrailer = (label: string) => ({
+      label,
+      entities: [],
+      claims: [],
+      used_sources: [],
+      supersedes_id: null,
+    });
+
+    const llm = new FakeLLMClient(
+      [
+        JSON.stringify({ ...basePlan(), intent: 'chat' }),
+        JSON.stringify({ ...basePlan(), intent: 'chat' }),
+      ],
+      [
+        synthesisText(longAnswer, emptyTrailer('TypeScript')),
+        synthesisText(followUp, emptyTrailer('TypeScript summary')),
+      ],
+    );
+
+    const app = createApp(db, {
+      chunkDelayMs: 0,
+      planner: createPlanner(llm),
+      synthesizer: createSynthesizer(llm),
+      searchProvider: { search: async () => [] },
+      now: () => NOW,
+    });
+
+    const first = await collectSse(app, {
+      sessionId: 'thread',
+      message: 'What is TypeScript and why is it used?',
+      userTz: 'Europe/London',
+    });
+    expect(parseEvents(String(first.body)).at(-1)).toEqual({ type: 'done' });
+
+    const second = await collectSse(app, {
+      sessionId: 'thread',
+      message: 'Summarize this.',
+      userTz: 'Europe/London',
+    });
+
+    const events = parseEvents(String(second.body));
+    const streamed = tokenText(events);
+
+    expect(events.at(-1)).toEqual({ type: 'done' });
+    expect(streamed).toContain('**Summary**');
+    expect(streamed).not.toContain("don't have");
+
+    const prompt = llm.streamCalls[1]?.messages[1]?.content ?? '';
+    expect(prompt).toContain('### RECENT CONVERSATION HISTORY');
+    expect(prompt).toContain('What is TypeScript and why is it used?');
+    expect(prompt).toContain('TypeScript is a typed superset of JavaScript');
+
+    const history =
+      prompt
+        .split('### RECENT CONVERSATION HISTORY')[1]
+        ?.split('RECALLED MEMORY')[0] ?? '';
+    expect(history).not.toContain('Summarize this.');
+
+    expect(db.listMessagesBySession('thread').map((row) => row.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+  });
+});

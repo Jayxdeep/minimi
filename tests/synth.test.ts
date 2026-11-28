@@ -255,6 +255,15 @@ describe('SYNTH_SYSTEM_PROMPT', () => {
       'Do not summarize past conversations.',
     );
   });
+
+  it('tells the model to summarize the previous answer for "this"', () => {
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'If the user asks to summarize, explain, or elaborate on "this", "that", or "it"',
+    );
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'summarize THAT answer. Do not say you don\'t have the text.',
+    );
+  });
 });
 
 describe('createSynthesizer', () => {
@@ -421,6 +430,48 @@ describe('createSynthesizer', () => {
 
     const user = client.streamCalls[0]?.messages[1]?.content ?? '';
     expect(user).toContain('(no stored memories matched this question)');
+  });
+
+  it('injects recent session history and labels it', async () => {
+    const client = new FakeLLMClient([], [synthesisText('ok [1].', TRAILER)]);
+
+    await run(
+      client,
+      context({
+        message: 'Summarize this.',
+        recentHistory: [
+          {
+            id: 'm1',
+            sessionId: 's1',
+            role: 'user',
+            content: 'What is TypeScript?',
+            createdAt: '2026-11-18T11:00:00.000Z',
+          },
+          {
+            id: 'm2',
+            sessionId: 's1',
+            role: 'assistant',
+            content: 'TypeScript adds static types to JavaScript.',
+            createdAt: '2026-11-18T11:00:02.000Z',
+          },
+        ],
+      }),
+    );
+
+    const user = client.streamCalls[0]?.messages[1]?.content ?? '';
+    expect(user).toContain('### RECENT CONVERSATION HISTORY');
+    expect(user).toContain('What is TypeScript?');
+    expect(user).toContain('TypeScript adds static types to JavaScript.');
+    expect(user).not.toContain('Summarize this.\n[2026');
+  });
+
+  it('marks an empty history rather than omitting the section', async () => {
+    const client = new FakeLLMClient([], [synthesisText('ok [1].', TRAILER)]);
+    await run(client);
+
+    const user = client.streamCalls[0]?.messages[1]?.content ?? '';
+    expect(user).toContain('### RECENT CONVERSATION HISTORY');
+    expect(user).toContain('(this is the first message in this session)');
   });
 
   it('allows superseding a recalled snapshot without a verify id', async () => {
