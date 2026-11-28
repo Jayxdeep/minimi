@@ -146,11 +146,17 @@ async function planTurn(
   stream.send({ type: 'plan', plan });
 
   // Deterministic recall: the planner chose what to look for; this loads it.
-  // Pasted text is the exception: never inject memory into that answer, even if
-  // a plan somehow still carries a window.
-  const recall: Recall = isLargePastedText(input.message)
-    ? { episodes: [], snapshots: [] }
-    : recallMemory(db, plan, { excludeMessageId: input.userMessageId });
+  // General knowledge and current-events questions do not need memory at all,
+  // and showing unrelated memories is what made the model narrate its state.
+  const needsMemory =
+    plan.intent === 'recall' ||
+    plan.intent === 'change' ||
+    plan.verify_snapshot_ids.length > 0;
+
+  const recall: Recall =
+    !needsMemory || isLargePastedText(input.message)
+      ? { episodes: [], snapshots: [] }
+      : recallMemory(db, plan, { excludeMessageId: input.userMessageId });
 
   const queries = plan.search_plan;
   const willSearch = searchProvider !== null && queries.length > 0;

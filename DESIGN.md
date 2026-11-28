@@ -276,6 +276,10 @@ prompt rules came from live failures:
   `### RECENT CONVERSATION HISTORY` (oldest first, current turn excluded). This is separate
   from global recall: it is what makes "summarize this" refer to the answer the agent just
   gave, while recall answers "what did we discuss on 3 November".
+- Memory is injected only for `recall` and `change` intents (or an explicit verify id).
+  General knowledge and current-events turns get an empty recall, and the prompt forbids
+  narrating the lookup. The user asks about the world; the agent should not report on its
+  own state.
 
 ## 7. Search
 
@@ -394,7 +398,7 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 4): 153 tests. Beyond the earlier coverage, recall is tested across
+Current suite (Phase 4): 155 tests. Beyond the earlier coverage, recall is tested across
 all four sources (window, FTS keywords, explicit re-verify ids, episode-linked snapshots),
 including exclusion of the current turn and priority-preserving caps. The eval harness
 (`tests/eval.test.ts`) seeds the Nov 19 CRM shortlist and the Nov 3 Postgres comparison,

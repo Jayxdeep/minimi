@@ -264,6 +264,19 @@ describe('SYNTH_SYSTEM_PROMPT', () => {
       'summarize THAT answer. Do not say you don\'t have the text.',
     );
   });
+
+  it('scopes memory to recall questions and forbids narrating it', () => {
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'Use the RECALLED MEMORY section ONLY if the user\'s question explicitly asks about past conversations',
+    );
+    expect(SYNTH_SYSTEM_PROMPT).toContain('IGNORE the RECALLED MEMORY');
+    expect(SYNTH_SYSTEM_PROMPT).toContain(
+      'Never apologize for what is or isn\'t in memory',
+    );
+    expect(SYNTH_SYSTEM_PROMPT).not.toContain(
+      'If RECALLED MEMORY is empty, say you have no record',
+    );
+  });
 });
 
 describe('createSynthesizer', () => {

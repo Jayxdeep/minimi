@@ -580,6 +580,79 @@ describe('eval: missing memory must not be invented', () => {
   });
 });
 
+describe('eval: general knowledge', () => {
+  it('does not inject or narrate memory for a current-events question', async () => {
+    // Unrelated memory exists; a lookup turn must never see or mention it.
+    seedCrm();
+
+    const plan: PlannerOutput = {
+      ...basePlan(),
+      intent: 'lookup',
+      memory: { window: null, keywords: ['npm'] },
+      search_plan: [{ query: 'npm supply chain attack', mode: 'news' }],
+    };
+
+    const provider: SearchProvider = {
+      search: async () => [
+        {
+          url: 'https://example.com/npm-attack',
+          title: 'npm supply-chain attack',
+          snippet: 'Malicious packages were published to npm.',
+          publishedDate: '2026-11-27',
+        },
+      ],
+    };
+
+    const answer = synthesisText(
+      'The npm supply-chain attack compromised several published packages [1].',
+      {
+        label: 'npm supply-chain attack',
+        entities: ['npm'],
+        claims: [
+          {
+            subject: 'npm',
+            attribute: 'other',
+            value: 'Malicious packages were published to npm',
+            as_of: '2026-11-27',
+            source_ids: [1],
+            confidence: 0.8,
+          },
+        ],
+        used_sources: [1],
+        supersedes_id: null,
+      },
+    );
+
+    const { events, streamed, llm } = await runTurn({
+      sessionId: 'npm',
+      message: 'What happened in the npm supply-chain attack in 2026?',
+      plan,
+      answer,
+      provider,
+    });
+
+    expect(events.at(-1)).toEqual({ type: 'done' });
+
+    const system = llm.streamCalls[0]?.messages[0]?.content ?? '';
+    expect(system).toContain(
+      'Use the RECALLED MEMORY section ONLY if the user\'s question explicitly asks',
+    );
+
+    const prompt = synthesizerPrompt(llm);
+    expect(prompt).toContain('(no stored memories matched this question)');
+    expect(prompt).not.toContain(CRM_SNAPSHOT_ID);
+    expect(prompt).not.toContain('$12/user/mo');
+
+    expect(streamed).toContain('[1]');
+    expect(streamed.toLowerCase()).not.toContain('memory');
+    expect(streamed.toLowerCase()).not.toContain('stored record');
+
+    const [snapshot] = snapshotsAt(NOW.toISOString());
+    expect(snapshot?.claims[0]?.subject).toBe('npm');
+    expect(snapshot?.sources[0]?.url).toBe('https://example.com/npm-attack');
+  });
+});
+
 describe('eval: conversational follow-up', () => {
   it('summarizes the previous answer instead of saying there is no text', async () => {
     const longAnswer =

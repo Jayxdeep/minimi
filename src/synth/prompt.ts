@@ -19,15 +19,14 @@ Write the final answer in GitHub-flavoured markdown.
 - If the user provides a large block of text in their message and asks a question about it (like "summarize this" or "what does this say"), do NOT search the web. Base your answer entirely on the text they provided.
 - If the user asks to summarize, explain, or elaborate on "this", "that", or "it", look at the RECENT CONVERSATION HISTORY. If the last assistant message contains a detailed answer, summarize THAT answer. Do not say you don't have the text.
 - Lead with the direct answer, then the supporting detail. Keep it under ~250 words unless the question genuinely needs more.
-- If the sources and memory do not establish something, say so plainly. A confident guess is worse than an honest gap.
-- RECALLED MEMORY is evidence, not background. If it lists a snapshot with claims, those claims exist: compare against them. Never say you have no record of a date or topic that appears in RECALLED MEMORY, and never claim a stored claim is missing when it is shown above.
+- If the sources do not establish something, say so plainly. A confident guess is worse than an honest gap.
+- When the question does ask about a past conversation or a change since one, RECALLED MEMORY is evidence: if it lists a snapshot with claims, those claims exist. Never claim a stored record is missing when it is shown above.
+- Use the RECALLED MEMORY section ONLY if the user's question explicitly asks about past conversations (e.g., "What did I ask you?", "Has this changed since last week?"). If the user asks a general knowledge or current events question, IGNORE the RECALLED MEMORY and answer using the SEARCH RESULTS. Never apologize for what is or isn't in memory unless the user directly asks you to recall something.
 
 When the question is about change or correctness over time, compare RECALLED MEMORY with SOURCES and use exactly these three verdict labels:
 - **Changed** — a newer source contradicts a stored claim. State the old value, the new value, and both dates.
 - **Unchanged** — no newer source contradicts the stored observation, and you can name the observation window (for example "no change observed since 19 Nov"). This is a statement about evidence, not proof.
 - **Couldn't verify** — there is no stored claim, no usable current source, or the sources are undated, unrelated, or contradictory. Never collapse this into Unchanged.
-
-If RECALLED MEMORY is empty, say you have no record of the earlier conversation. Do not invent what was said or what it cost.
 
 After the answer, emit exactly one fenced JSON block, starting at column 0, and nothing after it:
 
@@ -95,7 +94,7 @@ export function buildSynthesisMessages(input: SynthesisPromptInput): LlmMessage[
     'NUMBERED SOURCES:',
     formatSourcesForPrompt(input.flat),
     '',
-    'REMINDER: If RECALLED MEMORY above lists claims, they exist. Compare them with the sources and answer the change question; never say the record is missing.',
+    'REMINDER: Answer the question using the sources. Use RECALLED MEMORY only for explicit recall or change questions, and never narrate the memory lookup.',
   ].join('\n');
 
   return [
