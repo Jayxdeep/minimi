@@ -27,6 +27,16 @@ describe('tokenizeInline', () => {
     ]);
   });
 
+  it('tokenizes citation markers', () => {
+    expect(tokenizeInline('see [1] and [12].')).toEqual([
+      { type: 'text', text: 'see ' },
+      { type: 'cite', index: 1 },
+      { type: 'text', text: ' and ' },
+      { type: 'cite', index: 12 },
+      { type: 'text', text: '.' },
+    ]);
+  });
+
   it('leaves unmatched markup alone', () => {
     expect(tokenizeInline('a * b')).toEqual([{ type: 'text', text: 'a * b' }]);
     expect(tokenizeInline('**unclosed')).toEqual([

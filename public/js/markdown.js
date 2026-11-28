@@ -8,7 +8,7 @@
 
 import { safeUrl } from './url.js';
 
-const INLINE = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\([^)\s]+\))/g;
+const INLINE = /(\[[^\]]+\]\([^)\s]+\)|\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|\[(\d+)\])/g;
 
 export function tokenizeInline(text) {
   const tokens = [];
@@ -21,8 +21,11 @@ export function tokenizeInline(text) {
     }
 
     const raw = match[0];
+    const citation = /^\[(\d+)\]$/.exec(raw);
 
-    if (raw.startsWith('**')) {
+    if (citation) {
+      tokens.push({ type: 'cite', index: Number(citation[1]) });
+    } else if (raw.startsWith('**')) {
       tokens.push({ type: 'strong', text: raw.slice(2, -2) });
     } else if (raw.startsWith('`')) {
       tokens.push({ type: 'code', text: raw.slice(1, -1) });
@@ -122,10 +125,26 @@ export function parseBlocks(text) {
   return blocks;
 }
 
-function appendInline(parent, text) {
+function appendInline(parent, text, sources) {
   for (const token of tokenizeInline(text)) {
     if (token.type === 'text') {
       parent.append(document.createTextNode(token.text));
+      continue;
+    }
+
+    if (token.type === 'cite') {
+      const source = sources.get(token.index);
+      if (!source) {
+        parent.append(document.createTextNode(`[${token.index}]`));
+        continue;
+      }
+      const citation = document.createElement('a');
+      citation.className = 'citation';
+      citation.href = source.url;
+      citation.target = '_blank';
+      citation.rel = 'noopener noreferrer';
+      citation.textContent = `[${token.index}]`;
+      parent.append(citation);
       continue;
     }
 
@@ -152,7 +171,7 @@ function appendInline(parent, text) {
 }
 
 /** Render markdown into a DocumentFragment (never innerHTML). */
-export function renderMarkdown(text) {
+export function renderMarkdown(text, sources = new Map()) {
   const fragment = document.createDocumentFragment();
 
   for (const block of parseBlocks(text)) {
@@ -160,7 +179,7 @@ export function renderMarkdown(text) {
       const p = document.createElement('p');
       block.lines.forEach((line, index) => {
         if (index > 0) p.append(document.createElement('br'));
-        appendInline(p, line);
+        appendInline(p, line, sources);
       });
       fragment.append(p);
       continue;
@@ -170,7 +189,7 @@ export function renderMarkdown(text) {
       const heading = document.createElement(
         block.level === 1 ? 'h3' : block.level === 2 ? 'h4' : 'h5',
       );
-      appendInline(heading, block.text);
+      appendInline(heading, block.text, sources);
       fragment.append(heading);
       continue;
     }
@@ -178,7 +197,7 @@ export function renderMarkdown(text) {
     const list = document.createElement(block.type);
     for (const item of block.items) {
       const li = document.createElement('li');
-      appendInline(li, item);
+      appendInline(li, item, sources);
       list.append(li);
     }
     fragment.append(list);

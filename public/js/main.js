@@ -72,7 +72,7 @@ async function runTurn(text) {
         }
 
         case 'search_results':
-          target.addSearchResults(event.data || []);
+          target.setSources(event.data || []);
           view.setMode('search');
           view.scrollToBottom();
           break;

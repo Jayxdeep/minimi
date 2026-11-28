@@ -338,7 +338,9 @@ after close. On `close`: stop generating, do not persist the assistant message, 
 a snapshot. Partial state is worse than no state.
 
 The browser side is plain ES modules served directly (`public/js/`): `api.js` owns the POST,
-`sse.js` owns framing, `ui.js` owns the DOM, `main.js` owns the turn. The frame parser is a
+`sse.js` owns framing, `ui.js` owns the DOM, `main.js` owns the turn. `search_results` is
+consumed only to resolve `[n]` citations; raw results are never rendered as a list. The plan
+is a collapsed `<details>` so the default view is the answer, not the debugger. The frame parser is a
 pure `createSseParser(onEvent)` and is unit-tested in Node, including frames split mid-JSON
 and mid-UTF-8. Handler exceptions are deliberately outside the JSON `try/catch`, so a
 terminal `{type:"error"}` actually stops the stream instead of being swallowed by the
@@ -392,7 +394,7 @@ Date resolution is the main source of non-determinism, so it is tested separatel
 frozen clock and explicit timezone cases (including a DST boundary and a bare
 "3 November" in January).
 
-Current suite (Phase 4): 149 tests. Beyond the earlier coverage, recall is tested across
+Current suite (Phase 4): 153 tests. Beyond the earlier coverage, recall is tested across
 all four sources (window, FTS keywords, explicit re-verify ids, episode-linked snapshots),
 including exclusion of the current turn and priority-preserving caps. The eval harness
 (`tests/eval.test.ts`) seeds the Nov 19 CRM shortlist and the Nov 3 Postgres comparison,

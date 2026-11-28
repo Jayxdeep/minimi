@@ -4,7 +4,7 @@
  */
 
 import { renderMarkdown } from './markdown.js';
-import { prettyUrl, safeUrl } from './url.js';
+import { safeUrl } from './url.js';
 
 /**
  * @param {string} tag
@@ -37,18 +37,17 @@ function section(label, chips) {
   return wrap;
 }
 
-/** Render the planner output as a clean structured card plus raw JSON on demand. */
+/** Render the planner output inside a collapsed "thought process" accordion. */
 export function renderPlan(bubble, plan) {
   const details = document.createElement('details');
   details.className = 'plan-card';
-  details.open = true;
 
   const summary = document.createElement('summary');
-  
+
   const left = element('div', 'plan-header-left');
   const caret = element('span', 'plan-caret', '▸');
-  const title = element('span', 'plan-title', 'Execution Plan');
-  
+  const title = element('span', 'plan-title', '🧠 View thought process & plan');
+
   const intentStr = String(plan.intent || 'unknown').toLowerCase();
   const intentBadge = element('span', `intent-badge intent-${intentStr}`, intentStr);
 
@@ -132,87 +131,44 @@ export function renderPlan(bubble, plan) {
   bubble.append(details);
 }
 
-/** Render grouped search results as a collapsible "Web Results" card. */
-export function renderSearchResults(bubble, groups) {
-  const total = groups.reduce((count, group) => count + group.results.length, 0);
-
-  const details = document.createElement('details');
-  details.className = 'results-card';
-  details.open = true;
-
-  const summary = document.createElement('summary');
-  const left = element('div', 'plan-header-left');
-  left.append(
-    element('span', 'plan-caret', '▸'),
-    element('span', 'plan-title', 'Web Results'),
-    element(
-      'span',
-      'results-count',
-      `${total} ${total === 1 ? 'source' : 'sources'}`,
-    ),
-  );
-  summary.append(left);
-
-  const content = element('div', 'results-content');
-  let sourceIndex = 0;
-
-  if (groups.length === 0) {
-    content.append(element('p', 'results-empty', 'No queries were run.'));
+/** Citation indexes used in the answer, ascending. */
+function citedIndexes(text) {
+  const indexes = new Set();
+  for (const match of text.matchAll(/\[(\d+)\]/g)) {
+    const index = Number(match[1]);
+    if (Number.isInteger(index)) indexes.add(index);
   }
+  return [...indexes].sort((a, b) => a - b);
+}
 
-  for (const group of groups) {
-    const section = element('div', 'results-group');
+/** Footer listing only the sources the answer actually cited. */
+function renderSources(indexes, sources) {
+  const entries = indexes
+    .map((index) => ({ index, source: sources.get(index) }))
+    .filter((entry) => entry.source);
 
-    const head = element('div', 'results-query');
-    head.append(
-      element('span', 'query-text', group.query),
-      element('span', 'query-count', String(group.results.length)),
+  if (entries.length === 0) return null;
+
+  const wrap = element('div', 'answer-sources');
+  wrap.append(element('div', 'sources-title', 'Sources'));
+
+  const list = document.createElement('ul');
+  for (const { index, source } of entries) {
+    const item = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = source.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.append(
+      element('span', 'cite-num', `[${index}]`),
+      document.createTextNode(source.title),
     );
-
-    const list = element('ul', 'results-list');
-
-    if (group.results.length === 0) {
-      list.append(element('li', 'results-empty', 'No results for this query.'));
-    } else {
-      for (const result of group.results) {
-        const item = element('li', 'result-item');
-        const href = safeUrl(result.url);
-        const label = result.title || href || 'Untitled result';
-        sourceIndex += 1;
-
-        const head = element('div', 'result-head');
-        head.append(element('span', 'result-index', `[${sourceIndex}]`));
-
-        if (href) {
-          const link = element('a', 'result-title', label);
-          link.href = href;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          head.append(link);
-        } else {
-          head.append(element('span', 'result-title', label));
-        }
-
-        item.append(head);
-
-        if (href) {
-          item.append(element('div', 'result-url', prettyUrl(href)));
-        }
-
-        if (result.snippet) {
-          item.append(element('p', 'result-snippet', result.snippet));
-        }
-
-        list.append(item);
-      }
-    }
-
-    section.append(head, list);
-    content.append(section);
+    item.append(link);
+    list.append(item);
   }
 
-  details.append(summary, content);
-  bubble.append(details);
+  wrap.append(list);
+  return wrap;
 }
 
 /**
@@ -232,6 +188,7 @@ export class MessageView {
     this.cursor = null;
     this.received = false;
     this.text = '';
+    this.sources = new Map();
   }
 
   setStatus(text) {
@@ -256,8 +213,26 @@ export class MessageView {
     renderPlan(this.bubble, plan);
   }
 
-  addSearchResults(groups) {
-    renderSearchResults(this.bubble, groups);
+  /**
+   * Store the numbered search results so citations can resolve. They are never
+   * rendered as a raw list: the user only sees the synthesized answer.
+   */
+  setSources(groups) {
+    this.sources = new Map();
+    let index = 0;
+
+    for (const group of groups || []) {
+      for (const result of group.results || []) {
+        index += 1;
+        const href = safeUrl(result.url);
+        if (href) {
+          this.sources.set(index, {
+            url: href,
+            title: result.title || href,
+          });
+        }
+      }
+    }
   }
 
   appendToken(text) {
@@ -285,7 +260,10 @@ export class MessageView {
   complete() {
     this.finish();
     if (this.received && this.text.trim().length > 0) {
-      this.body.replaceChildren(renderMarkdown(this.text));
+      this.body.replaceChildren(renderMarkdown(this.text, this.sources));
+
+      const footer = renderSources(citedIndexes(this.text), this.sources);
+      if (footer) this.bubble.append(footer);
     }
   }
 
